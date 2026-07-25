@@ -60,9 +60,14 @@ Actions → **Fleet control panel** → Run workflow:
 `dry_run` defaults to on: fan-out across 46 repos should be a deliberate second
 click, not the first thing that happens on a mis-set dropdown.
 
-Fanning out beyond `this-repo-only` needs `FLEET_PROPAGATE_TOKEN`, because the
-workflow-scoped `GITHUB_TOKEN` cannot reach other repositories. Without it the
-job **fails loudly** rather than reporting a successful no-op.
+Fanning out beyond `this-repo-only` needs **`FLEET_ACTIONS_TOKEN`** (Actions:
+write) — *not* `FLEET_PROPAGATE_TOKEN`, because dispatching a workflow needs
+neither Contents nor Pull requests. The workflow-scoped `GITHUB_TOKEN` cannot
+reach other repositories at all, so without the secret the job **fails loudly**
+rather than reporting a successful no-op.
+
+Token scoping is not interchangeable across the three fleet tokens — see
+**[TOKENS.md](TOKENS.md)**.
 
 ## Adding a repo to the train
 

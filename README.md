@@ -6,7 +6,9 @@ The train is 46 component repositories that all carried byte-identical copies of
 the same four workflows — 45 of 46 `ci.yml` files were literally identical. Any
 policy change meant 46 PRs. This repo makes it one commit.
 
-See **[USAGE.md](USAGE.md)** for the full interface.
+See **[USAGE.md](USAGE.md)** for the full interface and **[TOKENS.md](TOKENS.md)** for the
+three-token model (they are *not* interchangeable — `FLEET_DISPATCH_TOKEN` is far
+narrower than `FLEET_PROPAGATE_TOKEN`).
 
 ## Quick start
 

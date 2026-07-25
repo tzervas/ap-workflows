@@ -155,12 +155,20 @@ jobs:
     steps:
       - name: Dispatch
         env:
-          GH_TOKEN: ${{ secrets.FLEET_PROPAGATE_TOKEN }}
+          # Deliberately NOT FLEET_PROPAGATE_TOKEN. Fan-out only calls
+          # `gh workflow run` (POST .../actions/workflows/{id}/dispatches), which
+          # needs "Actions: write" and nothing else — no Contents, no Pull
+          # requests. Reusing the propagate token here would put a
+          # push-and-open-PRs-on-46-repos credential in a second repo to do a job
+          # that needs neither. See TOKENS.md.
+          GH_TOKEN: ${{ secrets.FLEET_ACTIONS_TOKEN }}
         run: |
           set -eu
           if [ -z "${GH_TOKEN}" ]; then
-            echo "::error::secret FLEET_PROPAGATE_TOKEN is required to dispatch into other repositories."
-            echo "::error::The workflow-scoped GITHUB_TOKEN cannot. Refusing rather than reporting a no-op."
+            echo "::error::secret FLEET_ACTIONS_TOKEN is required to dispatch into other repositories."
+            echo "::error::The workflow-scoped GITHUB_TOKEN cannot reach them."
+            echo "::error::Scope it to Actions: write on the train — NOT Contents or Pull requests."
+            echo "::error::Refusing rather than reporting a successful no-op. See TOKENS.md."
             exit 1
           fi
           # One line on purpose: a bare newline at column 0 inside this block
