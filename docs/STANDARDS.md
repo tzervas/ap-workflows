@@ -143,6 +143,18 @@ The repo-settings half needs a token that can see the `allow_*` fields. The defa
 `GITHUB_TOKEN` cannot, and the checker says **"settings not asserted"** rather than guessing —
 absent is not `false`. Pass `secrets: {token: ...}` with repo-admin read to enable it.
 
+### 2. Branch targeting, and the repo with no `dev`
+
+Feature/fix PRs base `dev`. Exceptions for `main` are listed **explicitly** rather than
+tolerated by omission: heads matching `main-allowed-heads` (default `dev`, `sec`, `release/**`,
+`hotfix/**`, `revert-*`) or a `hotfix` / `promote` / `release` label.
+
+If the integration branch **does not exist on origin**, the rule reports *empty* and passes. A
+rule demanding a target that does not exist is red for a reason nobody can act on, and that is
+how red stops meaning anything. `mycelium-workflows` itself is such a repo — verified when this
+gate failed its own first PR for targeting `main`, which was the only branch available. Point
+`integration-branch` elsewhere if your repo integrates somewhere other than `dev`.
+
 ### 11. Trunk divergence — the post-merge detector
 
 This is the backstop for rule 1: it measures the damage rather than the intent, so it catches a
@@ -397,19 +409,27 @@ What was actually run, and what was not, stated plainly rather than implied.
 * `actionlint 1.7.7` — clean with the single documented ignore above; the caller template is
   clean with none.
 * `ruff check scripts/standards_check.py scripts/standards_selftest.py` — clean.
-* `python3 scripts/standards_selftest.py` — 33 assertions, 0 failures. Every rule fires on its
+* `python3 scripts/standards_selftest.py` — 35 assertions, 0 failures. Every rule fires on its
   dirty fixture and stays silent on the clean one.
 * The checker run against real clones of `gha-runner-ctl` and `tg-agent-relay`, where it
   reproduced known damage independently: `tg-agent-relay` `dev` measured **19 commits / 67 files
   / 5,865 insertions behind `main`**, and `gha-runner-ctl`'s merge base measured at **`ace4fe32`**
   — the same numbers the contract records.
 
-**Not verified** — nothing here has run inside GitHub Actions yet:
+**Verified in GitHub Actions** — `standards-selftest.yml` ran on `ubuntu-latest`
+([run 30180007075](https://github.com/tzervas/mycelium-workflows/actions/runs/30180007075)):
+the fixture suite passed, the checker ran against this repo, and `::error` annotations rendered
+with their WHAT/WHY/HOW bodies intact. It **correctly failed its own first PR** under
+`branch-targeting` — this repo has no `dev` branch, which is the bug that produced the
+empty-not-red handling above.
 
-* The reusable workflow has never executed on a runner. Job-name prefixing, the
-  `github.job_workflow_sha` checkout, the PyYAML install fallback chain and the annotation
-  rendering are all reasoned from documentation, not observed.
-* The fleet's only registered runner was **offline** when this was written, so no self-hosted
-  execution path was exercised.
+**Not verified:**
+
+* The **reusable** workflow (`reusable-standards.yml`) has never executed. Job-name prefixing
+  into `standards / standards`, the `github.job_workflow_sha` checkout and the PyYAML install
+  fallback chain are reasoned from documentation, not observed. Only the direct-invocation path
+  in `standards-selftest.yml` has run.
+* The fleet's only registered runner was **offline**, so no self-hosted execution path was
+  exercised.
 * The repo-settings half of rule 1 has never run against a token that can see the `allow_*`
   fields.

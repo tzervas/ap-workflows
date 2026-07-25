@@ -507,6 +507,29 @@ def rule_branch_targeting(cfg: Config) -> RuleResult:
                            f"`{cfg.release_branch}`.")
         return res
 
+    # A repo with no integration branch has nowhere else for this PR to go. Failing it
+    # would be a rule demanding a target that does not exist — red for a reason nobody
+    # can act on, which is how red stops meaning anything. Contract 4a: empty is a real
+    # answer. `git ls-remote` failing outright is UNKNOWN and still fails.
+    ls = run(["git", "ls-remote", "--heads", "origin",
+              cfg.integration_branch], cfg.repo_root)
+    if ls.returncode not in (0, 2):
+        res.findings.append(Finding(
+            rule="branch-targeting", title="could not tell whether the integration branch exists",
+            what=(f"`git ls-remote --heads origin {cfg.integration_branch}` failed:\n"
+                  f"{ls.stderr.strip()}"),
+            why="UNKNOWN, not empty — the checker cannot say whether this PR had a valid target.",
+            how="Ensure the job can reach origin (checkout with credentials, `contents: read`).",
+            unknown=True))
+        return res
+    if not ls.stdout.strip():
+        res.checked.append(
+            f"`{cfg.integration_branch}` does not exist on origin, so `{cfg.release_branch}` is "
+            f"the only trunk — nothing to enforce (empty, not unknown). Create "
+            f"`{cfg.integration_branch}` or set `integration-branch` if this repo integrates "
+            "somewhere else.")
+        return res
+
     res.findings.append(Finding(
         rule="branch-targeting",
         title=f"feature work must target `{cfg.integration_branch}`, not `{cfg.release_branch}`",

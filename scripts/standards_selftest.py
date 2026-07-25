@@ -62,11 +62,13 @@ def sh(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, cwd=str(cwd), capture_output=True, text=True, check=False)
 
 
-def make_repo(root: Path, files: dict[str, str]) -> None:
-    """Write files and make `root` a git repo with an origin/main and origin/dev.
+def make_repo(root: Path, files: dict[str, str], with_dev: bool = True) -> None:
+    """Write files and make `root` a git repo with an origin/main, optionally origin/dev.
 
-    Why a real git repo: the trunk-divergence rule shells out to git, and a fake would
-    only prove the fake works.
+    Why a real git repo: the trunk-divergence and branch-targeting rules shell out to git,
+    and a fake would only prove the fake works. `with_dev=False` covers the repo that has no
+    integration branch at all — where "feature PRs must target dev" has no valid target and
+    must therefore report EMPTY rather than red.
     """
     for name, body in files.items():
         p = root / name
@@ -80,7 +82,8 @@ def make_repo(root: Path, files: dict[str, str]) -> None:
     sh(["git", "commit", "-qm", "chore: fixture"], root)
     # A self-referential remote gives origin/main and origin/dev without a network.
     sh(["git", "remote", "add", "origin", str(root)], root)
-    sh(["git", "branch", "-f", "dev", "main"], root)
+    if with_dev:
+        sh(["git", "branch", "-f", "dev", "main"], root)
     sh(["git", "fetch", "-q", "origin"], root)
 
 
@@ -148,11 +151,12 @@ def expect_rc(name: str, rc: int, want: int, out: str = "") -> None:
         print(f"  FAIL  {name}: rc={rc}\n{out[-3000:]}")
 
 
-def case(title: str, files: dict[str, str], event: dict | None, checks, **modes: str) -> None:
+def case(title: str, files: dict[str, str], event: dict | None, checks,
+         with_dev: bool = True, **modes: str) -> None:
     print(f"\n== {title}")
     tmp = Path(tempfile.mkdtemp(prefix="std-selftest-"))
     try:
-        make_repo(tmp, files)
+        make_repo(tmp, files, with_dev=with_dev)
         rc, out = run_checker(tmp, event, **modes)
         checks(rc, out)
     finally:
@@ -217,6 +221,17 @@ def main() -> int:
          pr_event(base="main", head="hotfix/urgent", title="fix: urgent"),
          lambda rc, out: expect("hotfix allowed", out, "standards/branch-targeting",
                                 present=False),
+         **{"docs-with-change": "off", "promote-merge-mode": "off",
+            "trunk-divergence": "off"})
+
+    case("repo with no integration branch has no wrong target", base_files,
+         pr_event(base="main", head="feat/x"),
+         lambda rc, out: (
+             expect_rc("no dev branch: rc==0", rc, 0, out),
+             expect("no dev branch: reported as empty, not red", out,
+                    "does not exist on origin"),
+         ),
+         with_dev=False,
          **{"docs-with-change": "off", "promote-merge-mode": "off",
             "trunk-divergence": "off"})
 
