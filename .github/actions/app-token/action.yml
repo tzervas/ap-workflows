@@ -1,0 +1,106 @@
+# Mint a short-lived GitHub App installation access token.
+#
+# NO THIRD-PARTY ACTIONS. The train's release.yml states the posture explicitly
+# ("no third-party actions — plain curl against the REST API"), so this signs the
+# RS256 JWT with openssl and exchanges it with curl rather than pulling in
+# actions/create-github-app-token. ~40 lines, zero supply-chain surface.
+#
+# Why an App token rather than a PAT:
+#   - Expires in <=1 hour, so a leak is time-boxed. A PAT lives until rotated.
+#   - Events it creates DO trigger workflows, unlike GITHUB_TOKEN. The propagation
+#     cascade depends on each wave's PR actually running its checks so auto-merge
+#     can fire; GITHUB_TOKEN would silently produce PRs whose checks never run.
+#   - Its own rate-limit pool, so fleet automation stops competing with
+#     interactive `gh` use on the maintainer's account.
+#   - One revocation point, and actions are attributed to the App in the audit log.
+#
+# The output is a secret. It is masked with ::add-mask:: before being set.
+name: Mint GitHub App token
+description: Exchange an App ID + private key for a short-lived installation token
+
+inputs:
+  app-id:
+    description: 'GitHub App ID (not the client ID)'
+    required: true
+  private-key:
+    description: 'App private key, PEM contents'
+    required: true
+  owner:
+    description: 'Account the App is installed on'
+    required: false
+    default: tzervas
+
+outputs:
+  token:
+    description: 'Installation access token (expires within the hour)'
+    value: ${{ steps.mint.outputs.token }}
+  expires-at:
+    description: 'ISO8601 expiry'
+    value: ${{ steps.mint.outputs.expires_at }}
+
+runs:
+  using: composite
+  steps:
+    - id: mint
+      shell: bash
+      env:
+        APP_ID: ${{ inputs.app-id }}
+        APP_PEM: ${{ inputs.private-key }}
+        OWNER: ${{ inputs.owner }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "${APP_ID}" ] || [ -z "${APP_PEM}" ]; then
+          echo "::error::app-id and private-key are both required." >&2
+          echo "::error::Refusing rather than emitting an empty token that fails later as a 401." >&2
+          exit 1
+        fi
+
+        key="$(mktemp)"
+        # Never leave the private key on disk after this step.
+        trap 'shred -u "$key" 2>/dev/null || rm -f "$key"' EXIT
+        printf '%s\n' "${APP_PEM}" > "$key"
+
+        b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+
+        now="$(date +%s)"
+        # iat backdated 60s to tolerate clock skew; exp 9m (GitHub caps JWTs at 10m).
+        header="$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)"
+        payload="$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$((now - 60))" "$((now + 540))" "${APP_ID}" | b64url)"
+        signature="$(printf '%s.%s' "$header" "$payload" \
+          | openssl dgst -sha256 -sign "$key" -binary | b64url)"
+        jwt="${header}.${payload}.${signature}"
+
+        api="${GITHUB_API_URL:-https://api.github.com}"
+
+        # Resolve the installation for this account.
+        inst="$(curl -sS -H "Authorization: Bearer ${jwt}" \
+                     -H "Accept: application/vnd.github+json" \
+                     "${api}/app/installations" \
+          | python3 -c "import json,sys,os; d=json.load(sys.stdin); o=os.environ['OWNER'].lower(); print(next((str(i['id']) for i in d if i.get('account',{}).get('login','').lower()==o), ''))")"
+
+        if [ -z "${inst}" ]; then
+          echo "::error::No installation of App ${APP_ID} found on '${OWNER}'." >&2
+          echo "::error::Install the App on that account and grant it the train repos." >&2
+          exit 1
+        fi
+
+        resp="$(curl -sS -X POST \
+          -H "Authorization: Bearer ${jwt}" \
+          -H "Accept: application/vnd.github+json" \
+          "${api}/app/installations/${inst}/access_tokens")"
+
+        tok="$(printf '%s' "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin).get('token',''))")"
+        exp="$(printf '%s' "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin).get('expires_at',''))")"
+
+        if [ -z "${tok}" ]; then
+          # Print the error body but never the JWT or the key.
+          echo "::error::Failed to mint an installation token for installation ${inst}." >&2
+          printf '%s\n' "$resp" | head -c 500 >&2
+          exit 1
+        fi
+
+        echo "::add-mask::${tok}"
+        echo "token=${tok}" >> "$GITHUB_OUTPUT"
+        echo "expires_at=${exp}" >> "$GITHUB_OUTPUT"
+        echo "minted installation token for ${OWNER} (installation ${inst}), expires ${exp}"
