@@ -1,0 +1,264 @@
+# Reusable development-standards gate — the executable form of the fleet contract.
+#
+# WHY THIS EXISTS
+# ---------------
+# BRANCH-AND-RELEASE-CONTRACT.md is written down and still gets violated, because a written
+# rule depends on everyone remembering it at the moment it matters. A rule nobody *can*
+# violate beats a rule everyone knows. This workflow is the "cannot" half.
+#
+# The single most expensive rule it enforces: a PR from `dev` into `main` must land as a
+# MERGE COMMIT. Squashing it rewrites the promote into a new commit with no ancestry link,
+# so `main` and `dev` end up with identical trees and disjoint histories — git then has no
+# merge base, and every branch later cut from `dev` conflicts with every other branch.
+# Measured on this fleet: gha-runner-ctl's merge base stuck at ace4fe3 with ~3,600 lines of
+# phantom diff, tg-agent-relay's `dev` 17 commits / ~5,700 lines behind with ZERO unique
+# content, and 14 PRs across four ML-rust repos left DIRTY. Squash on the work-branch edge
+# is the fleet standard and is deliberately NOT flagged — a check that nags about standard
+# practice gets disabled, and then it is not checking the thing that matters either.
+#
+# EVERY RULE IS INDIVIDUALLY TOGGLEABLE: `enforce` (fails the job), `warn` (annotates only),
+# `off` (does not run). A repo adopts incrementally instead of all-or-nothing. The
+# judgement-heavy rules default to `warn`; the mechanical ones default to `enforce`.
+#
+# ADOPTING THIS RENAMES YOUR REQUIRED CHECK. READ THIS FIRST.
+# ----------------------------------------------------------
+# A reusable workflow PREFIXES the job name with the caller's job id: `standards` reports as
+# `standards / standards`, and the prefix CANNOT be suppressed. A ruleset that requires the
+# bare context `standards` will, the moment the caller lands, require a context that NEVER
+# REPORTS — the PR does not go red, it waits forever with nothing to fix.
+# Order is fixed: LAND THE CALLER FIRST, THEN UPDATE THE RULESET. See docs/STANDARDS.md.
+#
+# RUNNER SIZING
+# -------------
+# `gha-runner-ctl::pool::size_for_job` checks `runs-on` LABELS BEFORE the job-name heuristic.
+# The default labels below carry NO size token on purpose: verified 2026-07-25 against
+# `GET /repos/tzervas/gha-runner-ctl/actions/runners`, the fleet's only registered runner
+# advertises exactly [self-hosted, Linux, X64, podman] and no size label. Requiring `small`
+# today would queue this job against a label nothing serves — the same "waits forever with
+# nothing red" failure the contract warns about. Without a size label the job name
+# `standards` matches none of the Micro name signals and lands on the Medium catch-all
+# (2 CPU / 4 GiB, src/pool.rs), which is ample for a Python linter. Once workers register
+# size labels, pass `runner-labels` with `small` appended.
+name: Reusable Development Standards
+
+on:
+  workflow_call:
+    inputs:
+      runner-labels:
+        description: >-
+          JSON array of runner labels. Add a size token (e.g. "small") ONLY once your workers
+          register it — an unserved label queues the job forever instead of failing.
+        required: false
+        type: string
+        default: '["self-hosted","linux","x64","podman"]'
+
+      # ---- rule toggles: enforce | warn | off -------------------------------------------
+      yaml-validity:
+        description: 'Every workflow must parse (yaml.safe_load) and close its heredocs.'
+        required: false
+        type: string
+        default: enforce
+      promote-merge-mode:
+        description: 'dev -> main (and main -> dev/sec) must land as a merge commit.'
+        required: false
+        type: string
+        default: enforce
+      branch-targeting:
+        description: 'Feature/fix PRs base `dev`. Promotes, hotfixes and releases are allowed explicitly.'
+        required: false
+        type: string
+        default: enforce
+      protected-refs:
+        description: 'No force-push, hard reset or delete of main/dev/sec/release/** from any workflow.'
+        required: false
+        type: string
+        default: enforce
+      trunk-divergence:
+        description: 'main and dev must still share a merge base — the post-merge squashed-promote detector.'
+        required: false
+        type: string
+        default: enforce
+      version-policy:
+        description: 'Repo stays 0.x.x until a human adds the authorization label.'
+        required: false
+        type: string
+        default: enforce
+      version-drift:
+        description: 'Manifest version and .cz.toml version must agree.'
+        required: false
+        type: string
+        default: warn
+      exit-contract:
+        description: 'No continue-on-error / `|| true` on a security, lint or test gate.'
+        required: false
+        type: string
+        default: warn
+      schedule-cancel:
+        description: 'A scheduled workflow must not carry cancel-in-progress: true.'
+        required: false
+        type: string
+        default: enforce
+      python-floor:
+        description: 'No Python matrix cell below the floor.'
+        required: false
+        type: string
+        default: warn
+      conventional-title:
+        description: 'PR titles are conventional commits — the changelog is generated from them.'
+        required: false
+        type: string
+        default: enforce
+      docs-with-change:
+        description: 'Behaviour changed with no docs. Judgement is involved, so this warns by design.'
+        required: false
+        type: string
+        default: warn
+      actionlint:
+        description: 'Run actionlint. Requires the binary on the runner; off by default.'
+        required: false
+        type: string
+        default: 'off'
+
+      # ---- rule parameters ---------------------------------------------------------------
+      trunk-branches:
+        description: 'Comma list of branches that must never be force-pushed or deleted.'
+        required: false
+        type: string
+        default: 'main,dev,sec'
+      integration-branch:
+        description: 'The branch feature work targets.'
+        required: false
+        type: string
+        default: dev
+      release-branch:
+        description: 'The branch the promote lands on.'
+        required: false
+        type: string
+        default: main
+      main-allowed-heads:
+        description: >-
+          Comma list of fnmatch patterns for heads allowed to target the release branch.
+          Exceptions are listed explicitly rather than tolerated by omission.
+        required: false
+        type: string
+        default: 'dev,sec,release/**,hotfix/**,revert-*'
+      python-min:
+        description: 'MAJOR.MINOR floor for any python-version in a workflow.'
+        required: false
+        type: string
+        default: '3.11'
+      one-x-label:
+        description: 'PR label a human applies to authorize a 1.x.x version. No agent may add it.'
+        required: false
+        type: string
+        default: human-authorized-1x
+      commit-types:
+        description: 'Comma list of accepted conventional-commit types for PR titles.'
+        required: false
+        type: string
+        default: 'feat,fix,docs,style,refactor,perf,test,build,ci,chore,revert,merge,release'
+
+      # ---- where the checker comes from ---------------------------------------------------
+      standards-repo:
+        description: 'Repository holding scripts/standards_check.py.'
+        required: false
+        type: string
+        default: tzervas/mycelium-workflows
+      standards-ref:
+        description: >-
+          Fallback ref for the checker checkout. Normally unused: `github.job_workflow_sha`
+          pins the script to the exact commit of THIS workflow, so the script and the
+          workflow can never drift apart across a caller's tag pin.
+        required: false
+        type: string
+        default: main
+
+    secrets:
+      token:
+        description: >-
+          Optional. A token with repository-admin read lets the promote rule also assert the
+          repo's allowed merge methods; the default GITHUB_TOKEN cannot see those fields and
+          that half of the rule reports "not asserted" rather than guessing.
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  standards:
+    # Job name is a public interface: it becomes the `<caller-job> / standards` status
+    # context. Renaming it silently orphans any ruleset that requires the old name.
+    name: standards
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout the repository under test
+        uses: actions/checkout@v4
+        with:
+          # Full history: the trunk-divergence rule needs a real merge base, and the
+          # docs rule diffs against the PR base. A shallow clone would make both
+          # UNKNOWN, which this checker reports as a failure rather than a quiet pass.
+          fetch-depth: 0
+
+      - name: Checkout the standards checker
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.standards-repo }}
+          # `github.job_workflow_sha` is the commit of THIS reusable workflow, so the checker
+          # script can never drift from the workflow that calls it — whatever tag or branch
+          # the caller pinned. Without it, a caller on `@v0.1` would silently run `main`'s
+          # script: exactly the "documented, surfaced, and then ignored" class of bug the
+          # contract cites in 5a.
+          #
+          # actionlint 1.7.7 does not yet know this property and reports
+          # `property "job_workflow_sha" is not defined`. It is real and documented; verify
+          # with `actionlint -ignore 'property "job_workflow_sha" is not defined'`.
+          ref: ${{ github.job_workflow_sha || inputs.standards-ref }}
+          path: .standards-src
+          persist-credentials: false
+
+      - name: Ensure PyYAML
+        run: |
+          set -euo pipefail
+          if python3 -c 'import yaml' 2>/dev/null; then
+            echo "PyYAML already present"
+          elif command -v uv >/dev/null 2>&1 && uv pip install --system --quiet pyyaml 2>/dev/null; then
+            echo "PyYAML installed via uv"
+          elif python3 -m pip install --quiet --disable-pip-version-check pyyaml 2>/dev/null; then
+            echo "PyYAML installed via pip"
+          elif python3 -m pip install --quiet --disable-pip-version-check --break-system-packages pyyaml 2>/dev/null; then
+            echo "PyYAML installed via pip --break-system-packages"
+          else
+            echo "::error title=standards: PyYAML unavailable::The checker cannot parse workflows without PyYAML, so it cannot tell whether they are valid. That is UNKNOWN, not empty, and the contract requires it to fail loudly rather than report a green gate that measured nothing. Fix: install python3-yaml on the runner image."
+            exit 1
+          fi
+          python3 -c 'import sys, yaml; print("python", sys.version.split()[0], "/ pyyaml", yaml.__version__)'
+
+      - name: Check development standards
+        env:
+          GITHUB_TOKEN: ${{ secrets.token || github.token }}
+          STD_TOKEN: ${{ secrets.token || github.token }}
+          STD_REPO_ROOT: ${{ github.workspace }}
+          STD_TRUNK_BRANCHES: ${{ inputs.trunk-branches }}
+          STD_INTEGRATION_BRANCH: ${{ inputs.integration-branch }}
+          STD_RELEASE_BRANCH: ${{ inputs.release-branch }}
+          STD_MAIN_ALLOWED_HEADS: ${{ inputs.main-allowed-heads }}
+          STD_PYTHON_MIN: ${{ inputs.python-min }}
+          STD_ONE_X_LABEL: ${{ inputs.one-x-label }}
+          STD_COMMIT_TYPES: ${{ inputs.commit-types }}
+          STD_MODE_YAML_VALIDITY: ${{ inputs.yaml-validity }}
+          STD_MODE_PROMOTE_MERGE_MODE: ${{ inputs.promote-merge-mode }}
+          STD_MODE_BRANCH_TARGETING: ${{ inputs.branch-targeting }}
+          STD_MODE_PROTECTED_REFS: ${{ inputs.protected-refs }}
+          STD_MODE_TRUNK_DIVERGENCE: ${{ inputs.trunk-divergence }}
+          STD_MODE_VERSION_POLICY: ${{ inputs.version-policy }}
+          STD_MODE_VERSION_DRIFT: ${{ inputs.version-drift }}
+          STD_MODE_EXIT_CONTRACT: ${{ inputs.exit-contract }}
+          STD_MODE_SCHEDULE_CANCEL: ${{ inputs.schedule-cancel }}
+          STD_MODE_PYTHON_FLOOR: ${{ inputs.python-floor }}
+          STD_MODE_CONVENTIONAL_TITLE: ${{ inputs.conventional-title }}
+          STD_MODE_DOCS_WITH_CHANGE: ${{ inputs.docs-with-change }}
+          STD_MODE_ACTIONLINT: ${{ inputs.actionlint }}
+        run: python3 .standards-src/scripts/standards_check.py

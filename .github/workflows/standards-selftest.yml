@@ -1,0 +1,87 @@
+# Self-test for the development-standards gate.
+#
+# This repo's `reusable-standards.yml` is what stands between a bad merge and every repo that
+# adopts it, so the checker behind it gets tested before the tag moves. `standards_selftest.py`
+# asserts BOTH directions for every rule: the dirty fixture produces the finding, and the clean
+# fixture produces nothing. A rule that silently stops firing is worse than no rule — it is a
+# gate that is off while looking on.
+#
+# It also re-checks that every workflow and template in this repo parses, because the checker's
+# own rule 6 exists for a bug that broke 15 of 22 repos here.
+name: standards-selftest
+
+on:
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'scripts/standards_check.py'
+      - 'scripts/standards_selftest.py'
+      - '.github/workflows/reusable-standards.yml'
+      - '.github/workflows/standards-selftest.yml'
+      - 'templates/caller-standards.yml'
+  push:
+    branches: [main, dev]
+  workflow_dispatch:
+
+concurrency:
+  group: standards-selftest-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    name: standards selftest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Every workflow and template parses
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(.github/workflows/*.yml .github/workflows/*.yaml templates/*.yml)
+          # An empty glob here is UNKNOWN, not empty: this repo is workflow definitions, so
+          # "no workflows found" means the layout moved under us, not that there is nothing
+          # to check. Passing green on it would be a gate measuring nothing.
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no workflow or template files found — the repo layout changed"
+            exit 1
+          fi
+          rc=0
+          for f in "${files[@]}"; do
+            if python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" "$f"; then
+              echo "ok   $f"
+            else
+              echo "::error file=$f::does not parse as YAML"
+              rc=1
+            fi
+          done
+          exit "$rc"
+
+      - name: Rule fixtures — every rule fires, and stays quiet when clean
+        run: python3 scripts/standards_selftest.py
+
+      - name: The checker passes its own gate on this repo
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          STD_REPO_ROOT: ${{ github.workspace }}
+          # This repo is workflow definitions, not a product: it has no `dev` branch and no
+          # PR-scoped source. Dogfooding the rules that do apply is still the point.
+          STD_MODE_TRUNK_DIVERGENCE: 'off'
+          STD_MODE_DOCS_WITH_CHANGE: 'warn'
+          STD_MODE_EXIT_CONTRACT: 'enforce'
+          STD_MODE_PYTHON_FLOOR: 'enforce'
+          STD_MODE_VERSION_DRIFT: 'enforce'
+        run: python3 scripts/standards_check.py
