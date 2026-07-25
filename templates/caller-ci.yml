@@ -1,17 +1,31 @@
-# Component-repo CI. Install as .github/workflows/ci.yml
+# Component-repo Rust CI. Install as .github/workflows/ci.yml
 #
-# The whole gate is centralized: to change policy for all 46 repos, edit
-# reusable-rust-ci.yml in tzervas/ap-workflows — not 46 files.
+# The whole gate is centralized: to change policy for the Rust repos, edit
+# reusable-rust-ci.yml in tzervas/ap-workflows — not one file per repo.
 #
-# The job name stays `check` because that is the context protec-main and
-# protec-dev require across the train. Do not rename it.
+# PIN: @v1 is a MOVING MAJOR TAG. Minor and patch changes to the reusable
+# workflows propagate here automatically; a breaking change lands on v2 and every
+# caller must opt in deliberately. That is the point — policy fixes should reach
+# 249 repos without 249 PRs, while a breaking change should not.
+#
+# TIERING: dev is lighter, main is stringent. The tier is derived from the branch
+# under test (a PR's BASE branch, or the pushed branch), so a PR into main is
+# gated at main strength before it merges rather than after.
+#
+#   tier    depth        runner            bench      gpu
+#   ------  -----------  ----------------  ---------  --------------------------
+#   dev     check+test   github-hosted     compile    off
+#   main    full         self-hosted fleet run        on, if the repo has one
+#
+# `bench: run` at the main tier is deliberate: benchmarks that only compile are
+# not fresh benchmarks, and the main tier requires them to COMPLETE.
 name: ci
 
 on:
   workflow_dispatch:
     inputs:
       depth:
-        description: 'Gate depth'
+        description: 'Gate depth (overrides the tier default)'
         type: choice
         options: [lint, check, check+test, full]
         default: check+test
@@ -34,11 +48,19 @@ concurrency:
 
 jobs:
   check:
-    uses: tzervas/ap-workflows/.github/workflows/reusable-rust-ci.yml@main
+    uses: tzervas/ap-workflows/.github/workflows/reusable-rust-ci.yml@v1
     with:
-      # Dispatch overrides win; push/PR uses the train defaults.
-      depth: ${{ inputs.depth || 'check+test' }}
+      # Dispatch overrides win; otherwise the tier decides.
+      depth: >-
+        ${{ inputs.depth
+            || ((github.base_ref || github.ref_name) == 'main' && 'full' || 'check+test') }}
       runner-labels: >-
-        ${{ inputs.runner == 'self-hosted-fleet'
+        ${{ (inputs.runner == 'self-hosted-fleet'
+             || (inputs.runner == '' && (github.base_ref || github.ref_name) == 'main'))
             && '["self-hosted","linux","x64","podman"]'
             || '["ubuntu-latest"]' }}
+      bench: >-
+        ${{ (github.base_ref || github.ref_name) == 'main' && 'run' || 'compile' }}
+      # Set gpu: true only in repos that actually have a GPU code path. A GPU job
+      # on a repo without one is a green check that proves nothing.
+      gpu: false

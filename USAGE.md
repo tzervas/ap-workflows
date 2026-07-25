@@ -1,18 +1,110 @@
 # Usage
 
-Centralized, parameterized workflows for the **Mycelium Rust train** (46 repos).
-Change policy once here instead of opening 46 PRs.
+Centralized, parameterized workflows for the **Mycelium fleet** (249 non-archived
+repos; the 7 archived ones are out of scope). Change policy once here instead of
+opening a PR per repo.
 
 ## What lives where
 
 | File | Kind | Purpose |
 |---|---|---|
-| `.github/workflows/reusable-rust-ci.yml` | `workflow_call` | fmt / clippy / check / test / doc, parameterized |
+| `.github/workflows/reusable-rust-ci.yml` | `workflow_call` | fmt / clippy / check / test / doc / release build / bench / GPU |
+| `.github/workflows/reusable-python-ci.yml` | `workflow_call` | ruff / ruff format / type check / pytest / coverage / build |
+| `.github/workflows/reusable-shell-ci.yml` | `workflow_call` | shellcheck / parse / bats / shfmt |
+| `.github/workflows/reusable-mycelium-ci.yml` | `workflow_call` | **prepped, NOT adopted** — myc-check real, build/test are failing placeholders |
 | `.github/workflows/reusable-rust-security.yml` | `workflow_call` | gitleaks + trivy filesystem |
 | `.github/workflows/control-panel.yml` | `workflow_dispatch` | the human-facing selector surface |
-| `templates/caller-ci.yml` | template | 1-call wrapper a component repo installs |
+| `.github/dependabot.yml` | config | keeps the pinned actions here fresh for every caller at once |
+| `templates/caller-ci.yml` | template | 1-call Rust wrapper a component repo installs |
+| `templates/caller-python-ci.yml` | template | 1-call Python wrapper |
+| `templates/caller-shell-ci.yml` | template | 1-call Shell wrapper |
+| `templates/caller-security.yml` | template | scheduled security caller (no `cancel-in-progress` — see below) |
 | `scripts/scope.py` | helper | single definition of `compiler-core` / `stdlib` / `tooling` / `all` |
 | `scripts/rollout-callers.sh` | helper | install callers across the train, one PR per repo |
+
+## One input vocabulary across languages
+
+A caller reads the same regardless of language. Where a concept has no exact
+analogue the name changes but the *position* does not:
+
+| Rust | Python | Shell | Mycelium | meaning |
+|---|---|---|---|---|
+| `rust-version` | `python-version` | `shellcheck-version` | `mycelium-version` | the one pinned tool version |
+| `depth` | `depth` | `depth` | `depth` | `lint` / `check` / `check+test` / `full` |
+| `runner-labels` | `runner-labels` | `runner-labels` | `runner-labels` | JSON array for `runs-on` |
+| `cargo-jobs` | `test-jobs` | — | `build-jobs` | parallelism; `0` = inherit |
+| `all-features` | `all-extras` | `all-shells` | `all-features` | widen the checked surface |
+| `deny-warnings` | `deny-warnings` | `deny-warnings` | `deny-warnings` | warnings are errors |
+| `timeout-minutes` | `timeout-minutes` | `timeout-minutes` | `timeout-minutes` | job timeout |
+
+Every one of them names its required job **`check`**, and every one **validates
+`depth` and refuses loudly** on a bad value.
+
+### What `depth` means per language
+
+| depth | Rust | Python | Shell |
+|---|---|---|---|
+| `lint` | fmt + clippy | ruff + ruff format | shellcheck |
+| `check` | + `cargo check` | + type check (only if configured) + byte-compile | + `bash -n` parse |
+| `check+test` | + `cargo test` | + pytest | + bats where a suite exists |
+| `full` | + `cargo doc -D warnings` | + coverage + `uv build` | + `shfmt -d` |
+
+### Python version floor
+
+`reusable-python-ci.yml` refuses any interpreter at or below **3.10** — the
+single `python-version` and every cell of the optional `python-versions` matrix.
+Supported: 3.11+; the default and the preference is **3.13**. An EOL matrix cell
+is a green check that proves nothing about a supported runtime, so it is rejected
+rather than quietly run.
+
+The required context stays the single `check` job even when a matrix is
+requested; matrix cells report as `check (py3.12)` and are advisory breadth.
+
+### Languages deliberately not covered
+
+**Go (4 repos)** and **TypeScript (2 repos)** have no reusable workflow here.
+That is 6 repos out of 249 — the centralization payoff is what justifies the
+maintenance surface, and at 6 repos it does not. Their existing in-repo
+workflows keep running untouched. Adding them later is mechanical: copy the shape
+of `reusable-shell-ci.yml`, which is the simplest sibling.
+
+`Makefile` (2), `Dockerfile` (2), `HCL` (1) and `Batchfile` (1) repos likewise
+keep whatever gate they have.
+
+## Tiering: dev light, main stringent
+
+The caller derives the tier from the branch under test — a PR's **base** branch,
+or the pushed branch — so a PR *into* `main` is gated at main strength **before**
+it merges, not after:
+
+| tier | Rust depth | runner | bench | GPU |
+|---|---|---|---|---|
+| `dev` | `check+test` | GitHub-hosted | `compile` | off |
+| `main` | `full` | self-hosted fleet | `run` | on where a GPU path exists |
+
+`bench: run` at the main tier is the point: a benchmark that only *compiles* is
+not a fresh benchmark. `bench: compile` (`cargo bench --no-run`) is the cheap dev
+proof that the benches still build.
+
+The GPU job asserts `nvidia-smi` **and** a visible `/dev/nvidia*` or `/dev/dxg`
+device node, and fails `FAIL_ENV` when either is absent. Absent hardware never
+reads as a passing GPU suite.
+
+## Scheduled security scans do not cancel in progress
+
+`templates/caller-security.yml` sets a `concurrency.group` and deliberately omits
+`cancel-in-progress`. Cancelling an in-flight scheduled scan kills the run that
+was going to find something and leaves a *cancelled* security status — neither
+pass nor fail. Cancellation is right for CI on a fast-moving branch and wrong for
+a scan whose whole value is that it finishes.
+
+## Dependabot lives here, not in 249 repos
+
+`.github/dependabot.yml` watches `github-actions` at the repo root **and** at
+`.github/actions/app-token` (Dependabot does not recurse into composite actions
+from the root entry), plus `terraform` under `terraform/`. Because every caller
+resolves through this repo, one stale pinned action here is stale everywhere at
+once — which is exactly why the bot belongs here rather than in each component.
 
 ## The selector story, stated honestly
 
@@ -76,12 +168,51 @@ Install `templates/caller-ci.yml` as `.github/workflows/ci.yml`:
 ```yaml
 jobs:
   check:
-    uses: tzervas/ap-workflows/.github/workflows/reusable-rust-ci.yml@main
+    uses: tzervas/ap-workflows/.github/workflows/reusable-rust-ci.yml@v1
     with:
       depth: check+test
 ```
 
 Then add the repo to the right list in `scripts/scope.py`.
+
+Pin **`@v1`**, a moving major tag: minor and patch policy changes propagate
+without a PR per repo, while a breaking change lands on `v2` and every caller
+must opt in. `@main` is for developing this repo, not for callers.
+
+## Preserving a required context when you centralize
+
+A caller job that `uses:` a reusable workflow does **not** report a check named
+after the caller job alone. If a repo's ruleset already requires a context by a
+particular name (`gha-runner-ctl` requires `build`; `peft-rs` requires `Format
+Check`, `Test Suite …` and others), keep a small job **with that exact name** in
+the caller that `needs:` the reusable call and fails when it failed:
+
+```yaml
+jobs:
+  ci:
+    uses: tzervas/mycelium-workflows/.github/workflows/reusable-rust-ci.yml@v1
+  build:                      # the name the ruleset requires
+    name: build
+    needs: [ci]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          [ "${{ needs.ci.result }}" = "success" ] || exit 1
+```
+
+This is the same aggregate-gate pattern `fleet-ci.yml` already uses for its
+`gate` job. Without it, the required context never reports and the branch either
+blocks forever or — if someone then drops the requirement — merges unguarded.
+Auto-merge is armed fleet-wide, which makes this sharp.
+
+## The rule that overrides the template
+
+**Never weaken a check to fit the template.** If a repo's existing gate does
+something the reusable workflow does not (cargo-audit, cargo-deny, cargo-geiger,
+llvm-cov + Codecov, an MSRV job, a GPU suite), the PR that centralizes it
+replaces **only the overlapping portion** and leaves the rest in place. Losing a
+gate is not a refactor, it is a regression.
 
 ## Two names you must not change
 

@@ -1,0 +1,354 @@
+# Reusable Python CI for the Mycelium fleet.
+#
+# 47 non-archived repos report Python as their primary language (measured
+# 2026-07-25 over 249 non-archived repos; 7 archived repos are out of scope).
+# This is the Python sibling of reusable-rust-ci.yml and deliberately mirrors its
+# input names and semantics, so a caller looks the same regardless of language:
+#
+#   rust                     python                  meaning
+#   ----------------------   ---------------------   ------------------------------
+#   rust-version             python-version          the one pinned toolchain
+#   depth                    depth                   lint | check | check+test | full
+#   runner-labels            runner-labels           JSON array for runs-on
+#   cargo-jobs               test-jobs               parallelism; 0 = inherit
+#   all-features             all-extras              widen the dependency surface
+#   deny-warnings            deny-warnings           warnings are errors
+#   timeout-minutes          timeout-minutes         job timeout
+#
+# NOTE ON INPUT TYPES (a GitHub constraint, not a choice): `workflow_call`
+# supports only string / number / boolean / environment. There is no `choice`.
+# String inputs that model an enum are validated below and refuse loudly on a bad
+# value rather than silently defaulting.
+#
+# VERSION FLOOR: 3.10 reached end-of-life on 2026-10-31 upstream and is below the
+# fleet floor. Every version this workflow is asked to run — the single pinned
+# `python-version` and every cell of the optional `python-versions` matrix — is
+# validated to be >= 3.11, and the job refuses loudly otherwise. The default is
+# 3.13.
+name: Reusable Python CI
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: 'Pinned interpreter for the required `check` job (fleet floor is 3.11; prefer 3.13)'
+        required: false
+        type: string
+        default: '3.13'
+      python-versions:
+        description: >-
+          JSON array of extra interpreters for the advisory breadth matrix, e.g.
+          ["3.11","3.12","3.13"]. Empty array = no matrix job. Every cell must be >= 3.11.
+        required: false
+        type: string
+        default: '[]'
+      depth:
+        description: 'Gate depth: lint | check | check+test | full'
+        required: false
+        type: string
+        default: 'check+test'
+      runner-labels:
+        description: 'JSON array of runner labels, e.g. ["ubuntu-latest"] or ["self-hosted","linux","x64","podman"]'
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+      test-jobs:
+        description: 'pytest parallelism (-n). 0 = inherit (serial unless pytest-xdist is configured in the repo)'
+        required: false
+        type: number
+        default: 0
+      all-extras:
+        description: 'Sync every optional extra and dependency group (uv sync --all-extras --all-groups)'
+        required: false
+        type: boolean
+        default: false
+      deny-warnings:
+        description: 'ruff findings and pytest warnings are errors'
+        required: false
+        type: boolean
+        default: true
+      timeout-minutes:
+        description: 'Job timeout'
+        required: false
+        type: number
+        default: 30
+      test-command:
+        description: >-
+          Override the test invocation (run under `uv run` when uv is in use).
+          Empty = `pytest`. Set this for repos whose suite is a script, e.g.
+          `bash tests/run-tests.sh`.
+        required: false
+        type: string
+        default: ''
+      coverage-min:
+        description: 'Minimum line coverage percent at depth=full. 0 = measure and report, do not gate'
+        required: false
+        type: number
+        default: 0
+      lint-paths:
+        description: 'Paths passed to ruff. Empty = the whole tree (`.`)'
+        required: false
+        type: string
+        default: ''
+      format-check:
+        description: 'Also run `ruff format --check` (formatting is a gate, not a suggestion)'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  # uv must never silently reach for a different interpreter than the pinned one.
+  UV_PYTHON_DOWNLOADS: 'automatic'
+  PYTHONUNBUFFERED: '1'
+  FORCE_COLOR: '1'
+
+jobs:
+  check:
+    # Single job name on purpose, matching reusable-rust-ci.yml: `check` is the
+    # context a caller wires into its branch protection. Renaming it silently
+    # un-gates every repo that requires it.
+    name: check
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - name: Validate inputs (never-silent)
+        env:
+          DEPTH: ${{ inputs.depth }}
+          PYVER: ${{ inputs.python-version }}
+          PYVERS: ${{ inputs.python-versions }}
+        run: |
+          set -eu
+          case "$DEPTH" in
+            lint|check|check+test|full) : ;;
+            *) echo "::error::depth must be lint|check|check+test|full, got '$DEPTH'"; exit 1 ;;
+          esac
+
+          # Version floor. 3.10 and older are refused outright: an EOL cell in a
+          # matrix is a green check that proves nothing about a supported runtime.
+          floor_ok() {
+            v="$1"
+            case "$v" in
+              3.1[1-9]|3.1[1-9].*|3.[2-9][0-9]|3.[2-9][0-9].*|[4-9]*) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+          if ! floor_ok "$PYVER"; then
+            echo "::error::python-version '$PYVER' is below the fleet floor of 3.11 (3.10 and older are EOL). Prefer 3.13."
+            exit 1
+          fi
+          echo "depth=$DEPTH python-version=$PYVER extra-matrix=$PYVERS"
+
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: 'latest'
+          enable-cache: true
+          cache-dependency-glob: |
+            uv.lock
+            pyproject.toml
+            requirements*.txt
+
+      - name: Pin interpreter
+        run: uv python install "${{ inputs.python-version }}"
+
+      - name: Resolve project layout
+        id: layout
+        run: |
+          set -eu
+          proj=false
+          [ -f pyproject.toml ] && proj=true
+          echo "project=$proj" >> "$GITHUB_OUTPUT"
+
+          paths='${{ inputs.lint-paths }}'
+          [ -n "$paths" ] || paths='.'
+          echo "paths=$paths" >> "$GITHUB_OUTPUT"
+
+          # A repo with no Python packaging metadata is a configuration error for
+          # this workflow, not something to paper over with a green skip.
+          if [ "$proj" != "true" ] && [ ! -f requirements.txt ] && [ ! -f setup.py ]; then
+            echo "::error::no pyproject.toml, requirements.txt or setup.py — this repo is not a Python project; do not call reusable-python-ci.yml for it"
+            exit 1
+          fi
+
+      - name: Sync dependencies
+        env:
+          EXTRAS: ${{ inputs.all-extras }}
+        run: |
+          set -eu
+          if [ "${{ steps.layout.outputs.project }}" = "true" ]; then
+            if [ "$EXTRAS" = "true" ]; then
+              uv sync --all-extras --all-groups --python "${{ inputs.python-version }}"
+            else
+              uv sync --all-groups --python "${{ inputs.python-version }}"
+            fi
+          else
+            uv venv --python "${{ inputs.python-version }}"
+            [ -f requirements.txt ] && uv pip install -r requirements.txt
+            uv pip install ruff pytest
+          fi
+
+      - name: Ensure ruff
+        run: |
+          set -eu
+          if ! uv run ruff --version >/dev/null 2>&1; then
+            echo "::notice::ruff not in the project environment — installing the pinned tool"
+            uv tool install ruff
+          fi
+          uv run ruff --version || ruff --version
+
+      - name: ruff check
+        env:
+          DENY: ${{ inputs.deny-warnings }}
+        run: |
+          set -eu
+          # ruff exits non-zero on findings by default. `deny-warnings: false`
+          # downgrades the gate to advisory but still prints every finding — it
+          # never hides them.
+          if [ "$DENY" = "true" ]; then
+            uv run ruff check --output-format=github ${{ steps.layout.outputs.paths }}
+          else
+            uv run ruff check --output-format=github ${{ steps.layout.outputs.paths }} || \
+              echo "::warning::ruff findings present; deny-warnings=false so they are advisory here"
+          fi
+
+      - name: ruff format --check
+        if: inputs.format-check
+        run: uv run ruff format --check ${{ steps.layout.outputs.paths }}
+
+      - name: Type check (only if the repo configures one)
+        if: inputs.depth != 'lint'
+        run: |
+          set -eu
+          # Never invent a gate the repo did not opt into, and never claim one ran
+          # when it did not: this reports which branch it took.
+          if [ -f pyproject.toml ] && grep -q '^\[tool\.mypy' pyproject.toml; then
+            uv run mypy . || exit 1
+          elif [ -f mypy.ini ] || [ -f .mypy.ini ]; then
+            uv run mypy . || exit 1
+          elif [ -f pyproject.toml ] && grep -q '^\[tool\.pyright' pyproject.toml; then
+            uv run pyright || exit 1
+          else
+            echo "::notice::no mypy/pyright configuration in this repo — no type gate claimed"
+          fi
+
+      - name: Import check
+        if: inputs.depth != 'lint'
+        env:
+          PATHS: ${{ steps.layout.outputs.paths }}
+        run: |
+          set -eu
+          # Cheap equivalent of `cargo check`: every module must byte-compile
+          # under the pinned interpreter.
+          if [ "${{ steps.layout.outputs.project }}" = "true" ]; then
+            uv run python -c "import sys; print('interpreter', sys.version)"
+            # shellcheck disable=SC2086
+            uv run python -m compileall -q $PATHS >/dev/null
+          fi
+
+      - name: pytest
+        if: inputs.depth == 'check+test' || inputs.depth == 'full'
+        env:
+          DENY: ${{ inputs.deny-warnings }}
+          CUSTOM: ${{ inputs.test-command }}
+          JOBS: ${{ inputs.test-jobs }}
+        run: |
+          set -eu
+          if [ -n "$CUSTOM" ]; then
+            echo "running repo test command: $CUSTOM"
+            # shellcheck disable=SC2086
+            uv run $CUSTOM
+            exit 0
+          fi
+          if [ ! -d tests ] && [ ! -d test ] && ! ls test_*.py >/dev/null 2>&1; then
+            echo "::error::depth=${{ inputs.depth }} requests tests but this repo has no tests/ or test_*.py. Lower the depth or add tests — a green test gate with no tests is a lie."
+            exit 1
+          fi
+          args="-q"
+          [ "$DENY" = "true" ] && args="$args -W error"
+          [ "$JOBS" != "0" ] && args="$args -n $JOBS"
+          # shellcheck disable=SC2086
+          uv run pytest $args
+
+      - name: Coverage
+        if: inputs.depth == 'full'
+        env:
+          MIN: ${{ inputs.coverage-min }}
+          CUSTOM: ${{ inputs.test-command }}
+        run: |
+          set -eu
+          if [ -n "$CUSTOM" ]; then
+            echo "::warning::test-command override is set — coverage is measured over pytest only and may not cover the custom suite"
+          fi
+          if ! uv run coverage --version >/dev/null 2>&1; then
+            uv pip install coverage pytest-cov
+          fi
+          uv run coverage run -m pytest -q
+          uv run coverage report -m
+          if [ "$MIN" != "0" ]; then
+            uv run coverage report --fail-under="$MIN"
+          else
+            echo "::notice::coverage-min=0 — coverage measured and reported, not gated"
+          fi
+
+      - name: Build distribution
+        if: inputs.depth == 'full' && steps.layout.outputs.project == 'true'
+        run: uv build
+
+  matrix:
+    # Advisory breadth across interpreters. Opt-in (`python-versions`), and
+    # deliberately NOT the required context: the required gate stays the single
+    # `check` job so branch protection keeps one stable name.
+    name: check (py${{ matrix.python }})
+    if: inputs.python-versions != '[]'
+    needs: check
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ${{ fromJSON(inputs.python-versions) }}
+    steps:
+      - name: Validate matrix cell (never-silent)
+        run: |
+          set -eu
+          v="${{ matrix.python }}"
+          case "$v" in
+            3.1[1-9]|3.1[1-9].*|3.[2-9][0-9]|3.[2-9][0-9].*|[4-9]*) : ;;
+            *) echo "::error::python-versions cell '$v' is below the fleet floor of 3.11 (3.10 and older are EOL)"; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: 'latest'
+          enable-cache: true
+
+      - name: Pin interpreter
+        run: uv python install "${{ matrix.python }}"
+
+      - name: Sync dependencies
+        run: |
+          set -eu
+          if [ -f pyproject.toml ]; then
+            uv sync --all-groups --python "${{ matrix.python }}"
+          else
+            uv venv --python "${{ matrix.python }}"
+            [ -f requirements.txt ] && uv pip install -r requirements.txt
+            uv pip install pytest
+          fi
+
+      - name: pytest
+        env:
+          CUSTOM: ${{ inputs.test-command }}
+        run: |
+          set -eu
+          if [ -n "$CUSTOM" ]; then
+            # shellcheck disable=SC2086
+            uv run $CUSTOM
+          else
+            uv run pytest -q
+          fi

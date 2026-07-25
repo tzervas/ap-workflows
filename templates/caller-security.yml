@@ -1,0 +1,36 @@
+# Component-repo security gate. Install as .github/workflows/security.yml
+#
+# NOTE THE CONCURRENCY BLOCK — or rather, note what is missing from it.
+#
+# There is deliberately NO `cancel-in-progress` here. On a scheduled security
+# scan, cancelling the in-flight run when the next tick arrives means the scan
+# that was actually going to find something gets killed, and the repo shows a
+# cancelled (not failed, not passed) security status. Cancellation is correct for
+# CI on a fast-moving branch; it is wrong for a scan whose whole value is that it
+# finishes. Push/PR runs of this workflow are cheap enough to let queue.
+name: security
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  schedule:
+    # 04:17 UTC daily — off the hour so the whole fleet does not stampede the
+    # self-hosted pool at :00.
+    - cron: '17 4 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  # cancel-in-progress intentionally omitted; see the header.
+
+jobs:
+  security:
+    uses: tzervas/mycelium-workflows/.github/workflows/reusable-rust-security.yml@v1
+    with:
+      # Scheduled runs scan the full history; push/PR runs scan the tree.
+      full-history: ${{ github.event_name == 'schedule' }}

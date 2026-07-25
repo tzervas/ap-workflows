@@ -1,0 +1,227 @@
+# Reusable Shell CI for the Mycelium fleet.
+#
+# 49 non-archived repos report Shell as their primary language (measured
+# 2026-07-25 over 249 non-archived repos; 7 archived repos are out of scope), and
+# far more carry scripts under scripts/ without Shell being primary.
+#
+# Sibling of reusable-rust-ci.yml; the input names and semantics are deliberately
+# the same so a caller looks identical regardless of language:
+#
+#   rust                     shell                   meaning
+#   ----------------------   ---------------------   ------------------------------
+#   rust-version             shellcheck-version      the one pinned tool version
+#   depth                    depth                   lint | check | check+test | full
+#   runner-labels            runner-labels           JSON array for runs-on
+#   all-features             all-shells              widen the checked surface
+#   deny-warnings            deny-warnings           warnings are errors
+#   timeout-minutes          timeout-minutes         job timeout
+#
+# depth ladder:
+#   lint        shellcheck
+#   check       + `bash -n` / `sh -n` parse of every discovered script
+#   check+test  + bats, when the repo has bats tests
+#   full        + shfmt --diff (formatting is a gate)
+name: Reusable Shell CI
+
+on:
+  workflow_call:
+    inputs:
+      shellcheck-version:
+        description: 'Pinned shellcheck release used when the runner has none'
+        required: false
+        type: string
+        default: '0.10.0'
+      depth:
+        description: 'Gate depth: lint | check | check+test | full'
+        required: false
+        type: string
+        default: 'check+test'
+      runner-labels:
+        description: 'JSON array of runner labels, e.g. ["ubuntu-latest"] or ["self-hosted","linux","x64","podman"]'
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+      all-shells:
+        description: 'Also check non-bash scripts (sh/dash/ksh/zsh shebangs), not just bash'
+        required: false
+        type: boolean
+        default: false
+      deny-warnings:
+        description: 'shellcheck severity floor: true = warning, false = error only'
+        required: false
+        type: boolean
+        default: true
+      timeout-minutes:
+        description: 'Job timeout'
+        required: false
+        type: number
+        default: 20
+      shell-paths:
+        description: 'Space-separated roots to scan. Empty = the whole tree'
+        required: false
+        type: string
+        default: ''
+      exclude-codes:
+        description: 'Comma-separated shellcheck codes to exclude, e.g. SC1091,SC2312. Empty = exclude nothing'
+        required: false
+        type: string
+        default: ''
+      bats-required:
+        description: >-
+          Fail when bats tests exist but bats is missing on the runner.
+          Mirrors trivy-required in reusable-rust-security.yml. Default true:
+          a missing test runner must not read as a passing test suite.
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  check:
+    # Same job name as reusable-rust-ci.yml: `check` is the context callers wire
+    # into branch protection. Renaming it silently un-gates every caller.
+    name: check
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - name: Validate depth (never-silent)
+        run: |
+          set -eu
+          case "${{ inputs.depth }}" in
+            lint|check|check+test|full) : ;;
+            *) echo "::error::depth must be lint|check|check+test|full, got '${{ inputs.depth }}'"; exit 1 ;;
+          esac
+          echo "depth=${{ inputs.depth }}"
+
+      - uses: actions/checkout@v4
+
+      - name: Ensure shellcheck (pinned)
+        run: |
+          set -eu
+          if command -v shellcheck >/dev/null 2>&1; then
+            echo "using preinstalled $(command -v shellcheck) $(shellcheck --version | awk '/^version:/{print $2}')"
+            exit 0
+          fi
+          v="${{ inputs.shellcheck-version }}"
+          dir="${RUNNER_TEMP:-/tmp}/shellcheck-bin"
+          mkdir -p "$dir"
+          url="https://github.com/koalaman/shellcheck/releases/download/v${v}/shellcheck-v${v}.linux.x86_64.tar.xz"
+          tmp="$(mktemp -d)"
+          curl --proto '=https' --tlsv1.2 -sSfL "$url" -o "$tmp/sc.tar.xz"
+          tar -xJf "$tmp/sc.tar.xz" -C "$tmp"
+          install -m 0755 "$tmp/shellcheck-v${v}/shellcheck" "$dir/shellcheck"
+          rm -rf "$tmp"
+          echo "$dir" >> "$GITHUB_PATH"
+
+      - name: Discover scripts
+        id: find
+        env:
+          ROOTS: ${{ inputs.shell-paths }}
+          ALL: ${{ inputs.all-shells }}
+        run: |
+          set -eu
+          # shellcheck disable=SC2153  # ROOTS is supplied via the step `env:` block
+          roots="$ROOTS"
+          [ -n "$roots" ] || roots='.'
+          list="${RUNNER_TEMP:-/tmp}/shell-files.txt"
+          : > "$list"
+
+          # Extension-named scripts, plus extensionless files whose shebang is a shell.
+          # shellcheck disable=SC2086
+          find $roots \
+            -path ./.git -prune -o \
+            -path ./target -prune -o \
+            -path ./node_modules -prune -o \
+            -type f -print 2>/dev/null | while IFS= read -r f; do
+              case "$f" in
+                *.bash) echo "$f" >> "$list"; continue ;;
+                *.sh)   echo "$f" >> "$list"; continue ;;
+              esac
+              head -c 2 "$f" 2>/dev/null | grep -q '^#!' || continue
+              sb="$(head -n 1 "$f")"
+              # bash always counts. Other POSIX-ish shells count only when
+              # all-shells is on; ordering matters because "bash" contains "sh".
+              if printf '%s' "$sb" | grep -q 'bash'; then
+                echo "$f" >> "$list"
+              elif [ "$ALL" = "true" ] && printf '%s' "$sb" | grep -qE '(sh|ksh|zsh|dash)([[:space:]]|$)'; then
+                echo "$f" >> "$list"
+              fi
+            done
+
+          sort -u "$list" -o "$list"
+          n="$(wc -l < "$list" | tr -d ' ')"
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+          echo "discovered $n shell script(s)"
+          [ "$n" -gt 0 ] && sed -n '1,50p' "$list"
+
+          if [ "$n" -eq 0 ]; then
+            echo "::error::no shell scripts found under '$roots' — this repo has no shell surface to gate; do not call reusable-shell-ci.yml for it (a green shell gate over zero files proves nothing)"
+            exit 1
+          fi
+
+      - name: shellcheck
+        env:
+          DENY: ${{ inputs.deny-warnings }}
+          EXCL: ${{ inputs.exclude-codes }}
+        run: |
+          set -eu
+          sev=warning
+          [ "$DENY" = "true" ] || sev=error
+          args="--severity=$sev --format=gcc --external-sources"
+          [ -n "$EXCL" ] && args="$args --exclude=$EXCL"
+          echo "shellcheck $args (over ${{ steps.find.outputs.count }} files)"
+          # shellcheck disable=SC2046,SC2086
+          shellcheck $args $(cat '${{ steps.find.outputs.list }}')
+
+      - name: Parse check
+        if: inputs.depth != 'lint'
+        run: |
+          set -eu
+          fail=0
+          while IFS= read -r f; do
+            sb="$(head -n 1 "$f")"
+            case "$sb" in
+              *bash*) bash -n "$f" || fail=1 ;;
+              *)      sh   -n "$f" || fail=1 ;;
+            esac
+          done < '${{ steps.find.outputs.list }}'
+          [ "$fail" -eq 0 ] || { echo "::error::one or more scripts failed a syntax parse"; exit 1; }
+          echo "parse ok over ${{ steps.find.outputs.count }} file(s)"
+
+      - name: bats
+        if: inputs.depth == 'check+test' || inputs.depth == 'full'
+        env:
+          REQUIRED: ${{ inputs.bats-required }}
+        run: |
+          set -eu
+          # Only .bats files count as a bats suite. No files => nothing is claimed.
+          batsfiles="$(find . -path ./.git -prune -o -name '*.bats' -print 2>/dev/null | head -200)"
+          if [ -z "$batsfiles" ]; then
+            echo "::notice::no *.bats tests in this repo — no shell test gate claimed at depth=${{ inputs.depth }}"
+            exit 0
+          fi
+          echo "bats suites found:"
+          printf '%s\n' "$batsfiles"
+          if ! command -v bats >/dev/null 2>&1; then
+            if [ "$REQUIRED" = "true" ]; then
+              echo "::error::bats tests exist but bats is not installed on this runner. Install bats on the runner image, or set bats-required=false to accept an advisory skip. Reporting green here would claim a test run that never happened."
+              exit 1
+            fi
+            echo "::warning::bats missing on this runner and bats-required=false — tests NOT run, this job proves nothing about them"
+            exit 0
+          fi
+          bats --version
+          # shellcheck disable=SC2086
+          bats $batsfiles
+
+      - name: shfmt --diff
+        if: inputs.depth == 'full'
+        run: |
+          set -eu
+          if ! command -v shfmt >/dev/null 2>&1; then
+            echo "::error::depth=full requests a formatting gate but shfmt is not on this runner. Install shfmt on the runner image or lower the depth — skipping would report a formatting gate that never ran."
+            exit 1
+          fi
+          shfmt --version
+          # shellcheck disable=SC2046
+          shfmt -d $(cat '${{ steps.find.outputs.list }}')
