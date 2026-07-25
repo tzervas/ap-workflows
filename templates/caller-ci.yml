@@ -3,8 +3,20 @@
 # The whole gate is centralized: to change policy for all 46 repos, edit
 # reusable-rust-ci.yml in tzervas/mycelium-workflows — not 46 files.
 #
-# The job name stays `check` because that is the context protec-main and
-# protec-dev require across the train. Do not rename it.
+# CAUTION — the reported context is NOT `check`.
+#
+# The caller job below is named `check` and the reusable workflow's job is also
+# named `check`, but GitHub reports a reusable workflow's jobs as
+# `<caller job> / <called job>`. The context this actually publishes is:
+#
+#     check / check
+#
+# not `check`. `protec-main` / `protec-dev` require `check`, so installing this
+# template without also updating the rulesets leaves those repos waiting forever
+# on a context that no longer reports. Verified live — see the README section
+# "…but centralizing renames them anyway".
+#
+# Run scripts/sync-required-contexts.sh after this lands.
 name: ci
 
 on:

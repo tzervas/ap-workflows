@@ -30,6 +30,15 @@
 # ---------------------
 # It never removes a gate to make a repo fit the template. If a repo needs
 # something the reusable workflow cannot express, add an input upstream.
+#
+# YOU ARE NOT DONE WHEN THESE PRs MERGE
+# -------------------------------------
+# A job reached through a reusable workflow reports as `<caller job> / <job>` —
+# `fleet-ci / detect stack`, not `detect stack` — and the prefix cannot be
+# suppressed. So merging a caller silently renames every required context in that
+# repo. Run scripts/sync-required-contexts.sh immediately afterwards, per repo.
+# The gap is fail-closed (PRs block rather than merge unverified), which is why
+# the order is caller-first, ruleset-second.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -38,6 +47,12 @@ APPLY="${APPLY:-0}"
 BRANCH="${BRANCH:-ci/centralize-fleet-workflows}"
 PIN="${PIN:-v1}"
 SLEEP="${SLEEP:-1}"
+# Open the PRs as drafts. Use this while $PIN does not exist yet: a caller
+# pinned at a tag that has not been published resolves to nothing, and the run
+# fails with "unable to find reusable workflow". That red tick is correct — it
+# is a gate doing its job — but the PR is not ready for a human either, so say
+# so structurally rather than hoping someone reads the body.
+DRAFT="${DRAFT:-0}"
 
 command -v gh >/dev/null || { echo "error: gh required" >&2; exit 2; }
 command -v jq >/dev/null || { echo "error: jq required" >&2; exit 2; }
@@ -276,9 +291,18 @@ EOF
     failed=$((failed + 1)); rm -rf "$tmp"; continue
   fi
 
-  url="$(gh pr create --repo "$OWNER/$repo" --base "$default_branch" --head "$BRANCH" \
+  draft_flag=""
+  staged_note=""
+  if [ "$DRAFT" = "1" ]; then
+    draft_flag="--draft"
+    staged_note="> **Staged — do not merge yet.** This caller pins \`@$PIN\`, and that tag is published only once the central PR lands and \`release-tag.yml\` runs. Until then this PR's checks fail with *unable to find reusable workflow*, which is the gate working correctly. Mark it ready once \`@$PIN\` exists.
+
+"
+  fi
+
+  url="$(gh pr create --repo "$OWNER/$repo" --base "$default_branch" --head "$BRANCH" $draft_flag \
     --title "ci: centralize fleet workflows with branch-tier strictness" \
-    --body "Replaces this repo's local \`fleet-ci.yml\` and \`fleet-security.yml\` with thin callers into [\`mycelium-workflows\`](https://github.com/$OWNER/mycelium-workflows)\`@$PIN\`.
+    --body "${staged_note}Replaces this repo's local \`fleet-ci.yml\` and \`fleet-security.yml\` with thin callers into [\`mycelium-workflows\`](https://github.com/$OWNER/mycelium-workflows)\`@$PIN\`.
 
 ## Why
 

@@ -119,6 +119,58 @@ merges unguarded. Auto-merge is armed on part of the fleet, which makes this
 sharp. `self-test.yml` asserts these names on every push, so the failure is loud
 here instead of silent there.
 
+### …but centralizing renames them anyway. Read this before rolling out.
+
+A job that runs **inside** a repo reports its own name as the check context:
+
+```
+detect stack
+```
+
+The same job reached **through a reusable workflow** is reported with the
+*caller's* job name prefixed, and there is no way to suppress it:
+
+```
+fleet-ci / detect stack
+```
+
+Verified live on `tzervas/Multi-Enclave-Management-System_MEMS`, run
+`30175067628`:
+
+```
+jobs=1
+  fleet-ci / detect stack: queued  labels=self-hosted,linux,x64,podman
+jobs=2
+  fleet-security / gitleaks: queued
+  fleet-security / trivy filesystem (vuln+secret+license): queued
+```
+
+So **the act of centralizing renames every required context**, whether or not
+anyone intended it. `mycelium-core`'s `protec-main` currently requires `check`,
+`cargo check/test`, `detect stack`, `gitleaks`,
+`trivy filesystem (vuln+secret+license)` — after the caller lands, not one of
+those ever reports again, and PRs wait forever on a context that no longer
+exists.
+
+This applies to `templates/caller-ci.yml` too: a caller job named `check`
+invoking a reusable job named `check` reports **`check / check`**, not `check`.
+
+`scripts/sync-required-contexts.sh` is the other half of the migration. Run it
+**after** a repo's caller PR merges:
+
+```
+mycelium-core/protec-main:
+    'check'  (unchanged)
+    'cargo check/test'  ->  'fleet-ci / cargo check/test'
+    'detect stack'  ->  'fleet-ci / detect stack'
+    'gitleaks'  ->  'fleet-security / gitleaks'
+    'trivy filesystem (vuln+secret+license)'  ->  'fleet-security / trivy filesystem (vuln+secret+license)'
+```
+
+The gap between merging the caller and syncing the ruleset is **fail-closed** —
+old contexts stop reporting, new ones are not yet required, PRs block. Blocked is
+the safe direction, and it is why the order is caller-first, ruleset-second.
+
 Job names are **also** the fleet's sizing signal:
 `gha-runner-ctl::pool::size_for_job` derives the container CPU/RAM tier from the
 job name and `runs-on` labels. `cargo check/test` → Large, `cargo all-features
