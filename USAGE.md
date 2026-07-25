@@ -168,29 +168,58 @@ Install `templates/caller-ci.yml` as `.github/workflows/ci.yml`:
 ```yaml
 jobs:
   check:
-    uses: tzervas/ap-workflows/.github/workflows/reusable-rust-ci.yml@v1
+    uses: tzervas/ap-workflows/.github/workflows/reusable-rust-ci.yml@v0.1
     with:
       depth: check+test
 ```
 
 Then add the repo to the right list in `scripts/scope.py`.
 
-Pin **`@v1`**, a moving major tag: minor and patch policy changes propagate
-without a PR per repo, while a breaking change lands on `v2` and every caller
-must opt in. `@main` is for developing this repo, not for callers.
+Pin **`@v0.1`**, a moving tag. This repo is 0.x under `major_version_zero = true`
+(`.cz.toml`), so the **minor** is the breaking position: patch changes propagate
+without a PR per repo (`v0.1` is repointed across every `v0.1.x`), while a
+breaking change lands on `v0.2`, freezes `v0.1`, and every caller opts in
+deliberately. `@main` is for developing this repo, not for callers. There is no
+`v1` tag and pinning one will not resolve.
 
 ## Preserving a required context when you centralize
 
 A caller job that `uses:` a reusable workflow does **not** report a check named
-after the caller job alone. If a repo's ruleset already requires a context by a
-particular name (`gha-runner-ctl` requires `build`; `peft-rs` requires `Format
+after the caller job alone. GitHub prefixes every job of a reusable workflow with
+the **caller's** job name — `detect stack` becomes `fleet-ci / detect stack`,
+`check` becomes `check / check` — and **the prefix cannot be suppressed**
+(verified live on `tzervas/Multi-Enclave-Management-System_MEMS`, run
+`30175067628`). So the act of centralizing renames every required context whether
+or not anyone intended it, and a ruleset requiring the bare name waits forever on
+a context that never reports.
+
+There are two ways to handle that, and you need one of them.
+
+### 1. Move the ruleset — `scripts/sync-required-contexts.sh`
+
+The general answer. It rewrites each repo's required contexts to the prefixed
+names the reusable workflow actually publishes.
+
+**Order: update the CALLER first, then the RULESET.** In that order the gap is
+fail-**closed** — the old contexts have stopped reporting, the new ones are not
+yet required, and PRs block. Blocked is the safe direction. The reverse order
+un-gates the repo while the caller is still missing.
+
+```
+bash scripts/sync-required-contexts.sh                       # dry run, all repos
+APPLY=1 REPOS="mycelium-core" bash scripts/sync-required-contexts.sh
+```
+
+### 2. Keep the old name — an aggregate job in the caller
+
+If a repo's ruleset already requires a context by a particular name (`gha-runner-ctl` requires `build`; `peft-rs` requires `Format
 Check`, `Test Suite …` and others), keep a small job **with that exact name** in
 the caller that `needs:` the reusable call and fails when it failed:
 
 ```yaml
 jobs:
   ci:
-    uses: tzervas/mycelium-workflows/.github/workflows/reusable-rust-ci.yml@v1
+    uses: tzervas/mycelium-workflows/.github/workflows/reusable-rust-ci.yml@v0.1
   build:                      # the name the ruleset requires
     name: build
     needs: [ci]

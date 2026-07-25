@@ -30,7 +30,7 @@ concurrency:
 
 jobs:
   security:
-    uses: tzervas/mycelium-workflows/.github/workflows/reusable-rust-security.yml@v1
+    uses: tzervas/mycelium-workflows/.github/workflows/reusable-rust-security.yml@v0.1
     with:
       # Scheduled runs scan the full history; push/PR runs scan the tree.
       full-history: ${{ github.event_name == 'schedule' }}

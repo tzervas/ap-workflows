@@ -14,7 +14,7 @@
 # scanned. Scheduled runs are therefore never cancelled; only push/PR runs are
 # superseded.
 #
-# PIN DISCIPLINE: `@v1` is a MOVING major tag — see
+# PIN DISCIPLINE: `@v0.1` is a MOVING tag — see
 # https://github.com/tzervas/mycelium-workflows#tag-discipline
 name: fleet-security
 
@@ -36,7 +36,7 @@ permissions:
 
 jobs:
   fleet-security:
-    uses: tzervas/mycelium-workflows/.github/workflows/reusable-fleet-security.yml@v1
+    uses: tzervas/mycelium-workflows/.github/workflows/reusable-fleet-security.yml@v0.1
     with:
       tier: auto
       # Set trivy-required: true once trivy is on the runner image — that is what

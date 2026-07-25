@@ -41,11 +41,12 @@
 # the order is caller-first, ruleset-second.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# NOTE: this script generates the caller bodies inline (heredocs below) rather
+# than copying templates/, so it needs no $ROOT.
 OWNER="${OWNER:-tzervas}"
 APPLY="${APPLY:-0}"
 BRANCH="${BRANCH:-ci/centralize-fleet-workflows}"
-PIN="${PIN:-v1}"
+PIN="${PIN:-v0.1}"   # 0.x: the MINOR is the breaking position, so the moving tag is vMAJOR.MINOR
 SLEEP="${SLEEP:-1}"
 # Open the PRs as drafts. Use this while $PIN does not exist yet: a caller
 # pinned at a tag that has not been published resolves to nothing, and the run
@@ -169,8 +170,9 @@ for repo in $repos; do
 #             full Python matrix, and GPU jobs and benchmarks that RUN rather than skip.
 # The reusable workflow resolves the tier itself, so this file cannot get it wrong.
 #
-# \`@$PIN\` is a MOVING major tag: central minor and patch fixes land here
-# automatically; a major is a deliberate, reviewed move to @v2.
+# \`@$PIN\` is a MOVING tag. This repo is 0.x under \`major_version_zero = true\`,
+# so the MINOR is the breaking position: central patch fixes land here
+# automatically, and a breaking change is a deliberate, reviewed move to @v0.2.
 name: fleet-ci
 
 on:
@@ -282,8 +284,9 @@ schedule events. Under the previous unconditional setting a scheduled scan on an
 unpolled repo queued, was cancelled by the next tick, and reported 'cancelled'
 rather than 'failed' — so it never ran and nothing alerted.
 
-@$PIN is a moving major tag: central minor/patch fixes propagate automatically;
-a major bump is a deliberate move to @v2.
+@$PIN is a moving tag: central patch fixes propagate automatically. At 0.x the
+MINOR is the breaking position, so a breaking change is a deliberate move to
+@v0.2 and leaves @$PIN frozen.
 EOF
 
   if ! git -C "$tmp/$repo" push -q -u origin "$BRANCH" 2>/dev/null; then
@@ -330,7 +333,7 @@ The tier is resolved centrally from \`github.base_ref\` / \`github.ref_name\`, s
 
 ## Pin discipline
 
-\`@$PIN\` is a **moving major tag**. Central security and dependency fixes reach this repo with no PR here; a major bump is a deliberate, reviewed move to \`@v2\`.
+\`@$PIN\` is a **moving tag**. Central security and dependency fixes reach this repo with no PR here. This repo is \`0.x\` under \`major_version_zero = true\`, so the **minor** is the breaking position: a breaking change is a deliberate, reviewed move to \`@v0.2\`, and \`@$PIN\` freezes where it is.
 
 CI configuration only — no source, no manifest touched." 2>&1)" || {
     echo "  FAIL: pr create: $url"

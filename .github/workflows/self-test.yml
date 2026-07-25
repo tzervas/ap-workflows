@@ -76,6 +76,11 @@ jobs:
               ".github/workflows/reusable-rust-security.yml": {
                   "gitleaks", "trivy filesystem (vuln+secret+license)",
               },
+              ".github/workflows/reusable-python-ci.yml": {"check"},
+              ".github/workflows/reusable-shell-ci.yml": {"check"},
+              # reusable-mycelium-ci.yml is deliberately absent: it is prep-only,
+              # refuses to run without `acknowledge-not-adopted: true`, and must
+              # never become a required context on any repo.
           }
 
           rc = 0
@@ -99,10 +104,49 @@ jobs:
           set -euo pipefail
           # No matrix cell at or below 3.10 may reappear through a default.
           # This file is excluded: it necessarily mentions the versions it bans.
-          files="$(ls .github/workflows/*.yml templates/*.yml | grep -v 'self-test.yml')"
-          # shellcheck disable=SC2086
-          if grep -nE "python[-_ ]?version[^:]*:\s*['\"]?3\.(9|10)" $files; then
+          files=()
+          for f in .github/workflows/*.yml templates/*.yml; do
+            [ "$(basename "$f")" = "self-test.yml" ] && continue
+            files+=("$f")
+          done
+          if grep -nE "python[-_ ]?version[^:]*:\s*['\"]?3\.(9|10)" "${files[@]}"; then
             echo "::error::a Python version at or below 3.10 appears in a workflow default"
             exit 1
           fi
           echo "ok   no Python <= 3.10 defaults"
+
+      - name: VERSION and .cz.toml agree
+        run: |
+          set -euo pipefail
+          # The same fact written twice. Drift between them points release-tag.yml
+          # at the wrong series without anything else failing.
+          v_file="$(tr -d '[:space:]' < VERSION)"
+          v_cz="$(sed -n 's/^version *= *"\(.*\)"/\1/p' .cz.toml | head -1)"
+          if [ "$v_file" != "$v_cz" ]; then
+            echo "::error::VERSION ($v_file) and .cz.toml version ($v_cz) disagree"
+            exit 1
+          fi
+          if ! printf '%s' "$v_file" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::VERSION must be MAJOR.MINOR.PATCH, got '$v_file'"
+            exit 1
+          fi
+          echo "ok   VERSION = .cz.toml version = $v_file"
+
+      - name: The moving pin is v0.MINOR, never v1
+        run: |
+          set -euo pipefail
+          # major_version_zero = true puts the breaking position on the MINOR, so
+          # the tag callers pin is vMAJOR.MINOR. A bare-major pin would resolve
+          # to a tag that does not exist: the caller fails with "unable to find
+          # reusable workflow", fleet-wide, with no other warning.
+          if grep -rnE 'mycelium-workflows/\.github/workflows/[a-z-]+\.yml@v[0-9]+($|[^.0-9])' \
+               templates .github/workflows scripts README.md USAGE.md; then
+            echo "::error::a caller pins a bare major tag (@vN). While this repo is 0.x the moving tag is v0.MINOR."
+            exit 1
+          fi
+          expected="v$(cut -d. -f1,2 < VERSION)"
+          if ! grep -q "@${expected}\b" templates/caller-ci.yml; then
+            echo "::error::templates/caller-ci.yml does not pin @${expected} (derived from VERSION)"
+            exit 1
+          fi
+          echo "ok   moving pin is ${expected}"

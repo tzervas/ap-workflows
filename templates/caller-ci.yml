@@ -70,7 +70,7 @@ concurrency:
 
 jobs:
   check:
-    uses: tzervas/ap-workflows/.github/workflows/reusable-rust-ci.yml@v1
+    uses: tzervas/ap-workflows/.github/workflows/reusable-rust-ci.yml@v0.1
     with:
       # Dispatch overrides win; otherwise the tier decides.
       depth: >-

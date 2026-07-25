@@ -44,7 +44,7 @@ on:
   pull_request: { branches: [main, dev] }
 jobs:
   check:
-    uses: tzervas/ap-workflows/.github/workflows/reusable-rust-ci.yml@v1
+    uses: tzervas/ap-workflows/.github/workflows/reusable-rust-ci.yml@v0.1
     with:
       depth: check+test
 ```
@@ -53,17 +53,19 @@ Swap `reusable-rust-ci.yml` for `reusable-python-ci.yml` or
 `reusable-shell-ci.yml` and the caller is otherwise identical — the input names
 and semantics are the same across languages on purpose.
 
-## Version pin: `@v1` is a moving major tag
+## Version pin: `@v0.1` is the moving tag
 
-Callers pin `@v1`, not `@main` and not a SHA:
+Callers pin `@v0.1`, not `@main` and not a SHA. Full rules in
+[Tag discipline](#tag-discipline) below; the short form:
 
-* **minor / patch changes propagate automatically.** A policy fix reaches every
-  caller without a PR per repo — the entire reason this repo exists.
-* **major changes do not.** A breaking change lands on `v2`; every caller opts in
-  deliberately. That is the gate.
+* **patch changes propagate automatically.** `v0.1` is force-moved to each new
+  `v0.1.x` release commit, so a policy fix reaches every caller without a PR per
+  repo — the entire reason this repo exists.
+* **breaking changes do not.** They land on `v0.2`; `v0.1` freezes, and every
+  caller opts in deliberately. That is the gate.
 
-`v1` is force-moved to each new `v1.x.y` release commit. `@main` is for
-development of this repo only; a caller pinning `@main` gets un-reviewed policy.
+`@main` is for development of this repo only; a caller pinning `@main` gets
+un-reviewed policy.
 
 ## Selector surface
 
@@ -113,32 +115,67 @@ here.
 
 ## Tag discipline
 
-**Callers pin `@v1`, a moving major tag.** That single decision is what makes
-"centrally keep the base workflows up to date" true in practice:
+Versioning is **semver via commitizen**, configured in
+[`.cz.toml`](.cz.toml) — the same shape as `tzervas/gha-runner-ctl/.cz.toml`, so
+there is one fleet convention rather than one per repo:
+
+```toml
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "0.1.0"
+tag_format = "v$version"
+version_scheme = "semver"
+major_version_zero = true
+```
+
+### `major_version_zero = true` moves the breaking position
+
+This repo is **0.x**, and under `major_version_zero = true` the **MINOR is the
+breaking position**, not the major. `cz bump` maps a `feat!:` / `BREAKING
+CHANGE:` commit to `0.1.x -> 0.2.0` and leaves the major at 0.
+
+Everything downstream follows from that one fact:
+
+**Callers pin `@v0.1`** — a moving `MAJOR.MINOR` tag, not a bare major.
 
 ```yaml
-uses: tzervas/mycelium-workflows/.github/workflows/reusable-fleet-ci.yml@v1
+uses: tzervas/mycelium-workflows/.github/workflows/reusable-fleet-ci.yml@v0.1
 ```
 
 | change | what happens | who decides |
 |---|---|---|
-| patch / minor (`1.2.3` → `1.2.4`, `1.3.0`) | `v1` is repointed; every caller picks it up on its next run, with no PR in any repo | automatic, once `self-test` is green |
-| **major** (`1.x` → `2.0.0`) | `v2` is created; **`v1` freezes exactly where it is** | a human, per repo, by editing one line |
+| patch (`0.1.0` → `0.1.1`) | `v0.1` is repointed; every caller picks it up on its next run, with no PR in any repo | automatic, once `self-test` is green |
+| **breaking** (`0.1.x` → `0.2.0`) | `v0.2` is created; **`v0.1` freezes exactly where it is** | a human, per repo, by editing one line |
 
-`release-tag.yml` moves `v1` on every push to `main` whose `VERSION` still has
-major 1 — and only after `self-test` has passed **for that exact commit**. It
-polls rather than assumes, because for a tag that ~225 repos follow, "I could not
-tell" has to behave like "no".
+**There is no `v1`, and there is not meant to be one.** A `v1` tag would assert a
+stable interface this repo has not earned yet; leaving 0.x means editing
+`.cz.toml` deliberately, not drifting into it. `release-tag.yml` refuses to
+create a tag outside the `v0.*` series while `VERSION` is 0.x, and refuses to run
+at all if `VERSION` and `.cz.toml` disagree. `self-test.yml` refuses a bare-major
+pin anywhere in the tree.
+
+**The repo currently has zero tags.** `v0.1.0` and the moving `v0.1` are cut by
+`release-tag.yml` on the first push to `main` after this lands and after
+`self-test` is green for that commit. Until then a caller pinned at `@v0.1` fails
+with "unable to find reusable workflow" — which is why
+`scripts/rollout-fleet-callers.sh` opens its PRs as drafts by default. That red
+tick is correct: it is a caller pointing at policy that has not been published
+yet, and it turns green by itself once the tag exists.
+
+`release-tag.yml` moves `v0.1` on every push to `main` whose `VERSION` is still
+in the 0.1 series — and only after `self-test` has passed **for that exact
+commit**. It polls rather than assumes, because for a tag that ~225 repos follow,
+"I could not tell" has to behave like "no".
 
 So a breaking change is not "a commit on `main`". It is an edit to `VERSION`
-that raises the major. That edit is the gate, and it costs downstream repos
-nothing until they choose to move.
+that raises the breaking position. That edit is the gate, and it costs downstream
+repos nothing until they choose to move.
 
 Dependency bumps follow the same split (`.github/dependabot.yml` plus
 `dependabot-automerge.yml`): minor and patch are grouped and auto-merged behind
-`self-test`; **majors get their own PR, the `major-bump` label, and never
-auto-merge** — they are both the breaking class and the only class that can
-force a `v2`.
+`self-test`; **a dependency's major gets its own PR, the `major-bump` label, and
+never auto-merges** — it is the breaking class, and the only class that can force
+a `v0.2` of this interface.
 
 ## Do not rename these jobs
 
