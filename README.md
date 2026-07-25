@@ -8,7 +8,9 @@ policy change meant 46 PRs. This repo makes it one commit.
 
 See **[USAGE.md](USAGE.md)** for the full interface and **[TOKENS.md](TOKENS.md)** for the
 three-token model (they are *not* interchangeable — `FLEET_DISPATCH_TOKEN` is far
-narrower than `FLEET_PROPAGATE_TOKEN`).
+narrower than `FLEET_PROPAGATE_TOKEN`), **[GITHUB_APP.md](GITHUB_APP.md)** for the App
+that replaces both, and **[SECRETS.md](SECRETS.md)** for the terminal-, log- and
+agent-safe secret handling rules.
 
 ## Quick start
 

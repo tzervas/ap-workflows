@@ -23,9 +23,18 @@
 #   tofu plan      # on PR, posted for review
 #   tofu apply     # only after that PR merges
 #
-# STATE
-# Uses a local backend by default, which is fine for a single operator but does
-# not lock. Move to a remote backend before a second person or a CI job applies.
+# STATE AND SECRETS
+# Uses a local backend by default: fine for a single operator, but it does NOT
+# lock. Move to a remote backend before a second person or a CI job applies.
+#
+# Terraform state records resource attributes IN PLAINTEXT, and `sensitive = true`
+# hides values from console output only — it does nothing for state. Two defences,
+# used together:
+#   a. No secret is a managed resource here. Nothing sensitive enters state.
+#   b. OpenTofu native state encryption (see ../SECRETS.md for the exact block).
+#      This is a real reason to prefer OpenTofu over Terraform for this repo —
+#      Terraform has no equivalent. Encrypt the PLAN as well as the state; a saved
+#      plan carries the same values, so encrypting only state moves the leak.
 
 terraform {
   required_version = ">= 1.6"
