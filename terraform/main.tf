@@ -1,0 +1,56 @@
+# Repo settings and branch protection as code, for the Mycelium Rust train.
+#
+# WHY THIS EXISTS
+# Rulesets and repo settings were applied to 46 repos with ad-hoc API loops.
+# That works once and then rots: there is no diff, no review, no record of intent,
+# and no way to tell whether repo 31 drifted. Codifying it makes the fleet's
+# protection posture reviewable in a PR and re-appliable from scratch.
+#
+# It also buys the main practical benefit of ORGANIZATION rulesets — one source of
+# truth for 46 repos — WITHOUT needing an organization. Org-level rulesets require
+# the GitHub Team plan; a personal account (even Pro) cannot have them. This gives
+# central management on a personal account, at no plan cost.
+#
+# CREDENTIALS
+# Managing rulesets needs "Administration: write", which is deliberately NOT
+# granted to the propagation App. Use a SEPARATE credential here, and gate apply
+# behind a reviewed plan. Separating by blast radius is the point: the propagation
+# App can push branches and open PRs but cannot rewrite the protections that make
+# auto-merge safe.
+#
+# WORKFLOW
+#   tofu init
+#   tofu plan      # on PR, posted for review
+#   tofu apply     # only after that PR merges
+#
+# STATE
+# Uses a local backend by default, which is fine for a single operator but does
+# not lock. Move to a remote backend before a second person or a CI job applies.
+
+terraform {
+  required_version = ">= 1.6"
+  required_providers {
+    github = {
+      source  = "integrations/github"
+      version = "~> 6.0"
+    }
+  }
+}
+
+variable "owner" {
+  description = "Account (user or org) that owns the train"
+  type        = string
+  default     = "tzervas"
+}
+
+variable "github_token" {
+  description = "Token with Administration: write on the train repos. Do not commit."
+  type        = string
+  sensitive   = true
+  default     = null
+}
+
+provider "github" {
+  owner = var.owner
+  token = var.github_token
+}
