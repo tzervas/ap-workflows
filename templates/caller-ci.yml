@@ -3,10 +3,32 @@
 # The whole gate is centralized: to change policy for the Rust repos, edit
 # reusable-rust-ci.yml in tzervas/ap-workflows — not one file per repo.
 #
-# PIN: @v1 is a MOVING MAJOR TAG. Minor and patch changes to the reusable
-# workflows propagate here automatically; a breaking change lands on v2 and every
-# caller must opt in deliberately. That is the point — policy fixes should reach
-# 249 repos without 249 PRs, while a breaking change should not.
+# CAUTION — the reported context is NOT `check`.
+#
+# The caller job below is named `check` and the reusable workflow's job is also
+# named `check`, but GitHub reports a reusable workflow's jobs as
+# `<caller job> / <called job>`, and the prefix cannot be suppressed. The context
+# this actually publishes is:
+#
+#     check / check
+#
+# not `check`. `protec-main` / `protec-dev` require `check`, so installing this
+# template without also updating the rulesets leaves those repos waiting forever
+# on a context that no longer reports. Verified live — see the README section
+# "…but centralizing renames them anyway".
+#
+# ORDER MATTERS: update the CALLER first, then the RULESET
+# (`scripts/sync-required-contexts.sh`). In that order the gap fails CLOSED —
+# the old contexts have stopped reporting and the new ones are not yet required,
+# so PRs block. The reverse order un-gates the repo while the caller is missing.
+#
+# PIN: @v0.1 is a MOVING tag. This repo is 0.x under `major_version_zero = true`
+# (see .cz.toml), so the MINOR is the breaking position: patch changes to the
+# reusable workflows (v0.1.0 -> v0.1.1) propagate here automatically, while a
+# breaking change lands on v0.2 and FREEZES v0.1 — every caller then opts in
+# deliberately by editing one line. That is the point: policy fixes should reach
+# 249 repos without 249 PRs, while a breaking change should not. There is no
+# `v1` and there will not be one until the interface is declared stable.
 #
 # TIERING: dev is lighter, main is stringent. The tier is derived from the branch
 # under test (a PR's BASE branch, or the pushed branch), so a PR into main is

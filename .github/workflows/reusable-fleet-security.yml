@@ -1,0 +1,184 @@
+# Reusable fleet security — the centralized source of truth for `fleet-security.yml`.
+#
+# Measured 2026-07-25: 225 of 239 non-archived, non-fork repos carry a
+# `fleet-security.yml`, in 6 byte-variants. The two dominant variants (124 + 97)
+# differ materially — the older one pulls `zricethezav/gitleaks:latest`
+# unauthenticated and unpinned, the newer one installs a pinned release and
+# verifies its SHA256. Centralizing means the hardened one is the only one.
+#
+# JOB NAMES ARE A PUBLIC INTERFACE. DO NOT RENAME.
+#   `gitleaks` and `trivy filesystem (vuln+secret+license)` are required
+#   status-check contexts across the fleet's rulesets.
+#
+# Both names route to SizeTier::Micro (0.25 cpu / 512m) via
+# gha-runner-ctl::pool::size_for_job — correct, and measured: gitleaks peaks
+# ~19 MiB and trivy ~121 MiB. Trivy's real cost is ~1.2 GiB of disk cache.
+#
+# ON `concurrency` AND SCHEDULED SCANS — read before adding one
+# -------------------------------------------------------------
+# This workflow deliberately carries NO `concurrency` block, and the caller
+# template sets `cancel-in-progress` to false for `schedule` events. A scheduled
+# self-hosted scan under `cancel-in-progress: true` will silently NEVER RUN if
+# the fleet is not currently polling that repo: the run queues waiting for a
+# runner, the next scheduled tick cancels it, and the result is reported as
+# `cancelled` — not `failed` — so no alert fires and the repo looks scanned.
+# This is not hypothetical; it was observed on this fleet (e.g. tzervas/aNa,
+# fleet-security schedule runs reporting `cancelled`).
+name: Reusable Fleet Security
+
+on:
+  workflow_call:
+    inputs:
+      tier:
+        description: "Strictness tier: auto | dev | main"
+        required: false
+        type: string
+        default: 'auto'
+      main-branches:
+        description: 'Comma list of branches that are the stringent (main) tier'
+        required: false
+        type: string
+        default: 'main,master'
+      runner-labels:
+        description: 'JSON array of runner labels'
+        required: false
+        type: string
+        default: '["self-hosted","linux","x64","podman"]'
+      gitleaks-version:
+        description: 'Pinned gitleaks release'
+        required: false
+        type: string
+        default: '8.30.1'
+      gitleaks-sha256:
+        description: 'SHA256 of gitleaks_<version>_linux_x64.tar.gz. Must be updated together with gitleaks-version.'
+        required: false
+        type: string
+        default: '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb'
+      trivy-severity:
+        description: 'Comma list: LOW,MEDIUM,HIGH,CRITICAL'
+        required: false
+        type: string
+        default: 'HIGH,CRITICAL'
+      trivy-required:
+        description: >-
+          Fail when trivy is missing from the runner instead of an advisory skip.
+          Default false because trivy is not yet on the fleet image; flipping this
+          to true is what turns the scan into a real gate.
+        required: false
+        type: boolean
+        default: false
+      full-history:
+        description: "Force a full git-history secret scan. Empty/false = main tier and schedule scan history, dev tier scans the tree."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: gitleaks
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
+    timeout-minutes: 20
+    steps:
+      - name: Resolve tier
+        id: t
+        env:
+          TIER_IN: ${{ inputs.tier }}
+          MAIN_BRANCHES: ${{ inputs.main-branches }}
+          TARGET: ${{ github.base_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          case "$TIER_IN" in
+            dev|main) tier="$TIER_IN" ;;
+            auto)
+              tier=dev
+              IFS=',' read -ra mains <<< "$MAIN_BRANCHES"
+              for b in "${mains[@]}"; do
+                b="$(echo "$b" | tr -d '[:space:]')"
+                [ -n "$b" ] || continue
+                if [ "$TARGET" = "$b" ]; then tier=main; break; fi
+              done
+              ;;
+            *) echo "::error::tier must be auto|dev|main, got '$TIER_IN'"; exit 1 ;;
+          esac
+          # History is scanned at main tier, on the weekly schedule, or on demand.
+          # Dev tier scans the working tree: a secret introduced by the PR is
+          # caught either way, and dev does not pay for a full-depth fetch.
+          deep=false
+          if [ "$tier" = "main" ] || [ "${GITHUB_EVENT_NAME}" = "schedule" ] || [ "${{ inputs.full-history }}" = "true" ]; then
+            deep=true
+          fi
+          echo "tier=$tier" >> "$GITHUB_OUTPUT"
+          echo "deep=$deep" >> "$GITHUB_OUTPUT"
+          echo "tier=$tier event=${GITHUB_EVENT_NAME} full-history=$deep"
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ steps.t.outputs.deep == 'true' && 0 || 1 }}
+          persist-credentials: false
+
+      - name: Ensure gitleaks (pinned + checksum)
+        env:
+          GITLEAKS_VERSION: ${{ inputs.gitleaks-version }}
+          GITLEAKS_SHA256: ${{ inputs.gitleaks-sha256 }}
+        run: |
+          set -euo pipefail
+          if command -v gitleaks >/dev/null 2>&1; then
+            echo "using preinstalled $(command -v gitleaks) ($(gitleaks version 2>/dev/null || true))"
+            exit 0
+          fi
+          install_dir="${RUNNER_TEMP:-/tmp}/gitleaks-bin"
+          mkdir -p "$install_dir"
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          tmp="${RUNNER_TEMP:-/tmp}/${archive}"
+          curl --proto '=https' --tlsv1.2 -fsSL "$url" -o "$tmp"
+          echo "${GITLEAKS_SHA256}  ${tmp}" | sha256sum -c -
+          tar -xzf "$tmp" -C "$install_dir" gitleaks
+          chmod 0755 "$install_dir/gitleaks"
+          echo "$install_dir" >> "$GITHUB_PATH"
+          "$install_dir/gitleaks" version
+
+      - name: Run gitleaks
+        run: |
+          set -euo pipefail
+          if ! command -v gitleaks >/dev/null 2>&1; then
+            echo "::error::gitleaks unavailable after install — failing rather than reporting a clean scan" >&2
+            exit 1
+          fi
+          if [ "${{ steps.t.outputs.deep }}" = "true" ]; then
+            gitleaks detect --source . --verbose --redact --exit-code 1
+          else
+            gitleaks detect --source . --no-git --verbose --redact --exit-code 1
+          fi
+
+  trivy-fs:
+    name: trivy filesystem (vuln+secret+license)
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
+    # Advisory by default because trivy is not on the fleet image yet. Set
+    # trivy-required=true once it is, and this becomes a hard gate.
+    continue-on-error: ${{ !inputs.trivy-required }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Trivy fs
+        run: |
+          set -euo pipefail
+          if ! command -v trivy >/dev/null 2>&1; then
+            if [ "${{ inputs.trivy-required }}" = "true" ]; then
+              echo "::error::trivy missing on this runner and trivy-required=true" >&2
+              exit 1
+            fi
+            echo "::warning::trivy missing on runner — advisory skip. Install trivy on the runner image, or set trivy-required=true, for a hard gate."
+            exit 0
+          fi
+          trivy fs --scanners vuln,secret,license \
+            --severity "${{ inputs.trivy-severity }}" \
+            --skip-dirs .git --skip-dirs target --skip-dirs node_modules --skip-dirs .venv \
+            --exit-code 1 --no-progress \
+            .

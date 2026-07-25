@@ -1,0 +1,108 @@
+# This repo's own gate. It is the thing standing between an auto-merged patch
+# bump and ~225 repos, so it checks two things that actually matter:
+#
+#   1. every workflow parses;
+#   2. the required status-check contexts still exist, spelled exactly as the
+#      fleet's rulesets require them.
+#
+# (2) is the important one. Renaming a job does not fail loudly anywhere else:
+# the required context simply stops reporting, and the PR either blocks forever
+# or merges unguarded. This makes that failure mode loud, here, before the tag
+# moves.
+name: self-test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: self-test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: validate workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Every workflow parses
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet pyyaml
+          rc=0
+          for f in .github/workflows/*.yml .github/actions/*/action.yml templates/*.yml; do
+            [ -e "$f" ] || continue
+            if python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" "$f"; then
+              echo "ok   $f"
+            else
+              echo "::error file=$f::does not parse as YAML"
+              rc=1
+            fi
+          done
+          exit "$rc"
+
+      - name: Required status-check contexts are intact
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys, yaml
+
+          # These names are required contexts in the fleet's protec-main /
+          # protec-dev rulesets. Changing one here silently un-gates every repo
+          # that requires it.
+          CONTRACT = {
+              ".github/workflows/reusable-fleet-ci.yml": {
+                  "detect stack", "cargo check/test", "python lint/test",
+                  "no stack detected",
+              },
+              ".github/workflows/reusable-fleet-security.yml": {
+                  "gitleaks", "trivy filesystem (vuln+secret+license)",
+              },
+              ".github/workflows/reusable-rust-ci.yml": {"check"},
+              ".github/workflows/reusable-rust-security.yml": {
+                  "gitleaks", "trivy filesystem (vuln+secret+license)",
+              },
+          }
+
+          rc = 0
+          for path, required in CONTRACT.items():
+              doc = yaml.safe_load(open(path))
+              present = {j.get("name", k) for k, j in doc["jobs"].items()}
+              missing = required - present
+              if missing:
+                  rc = 1
+                  for m in sorted(missing):
+                      print(f"::error file={path}::required status-check context "
+                            f"'{m}' is gone. Renaming it does not fail loudly in the "
+                            f"fleet — the context just never reports.")
+              else:
+                  print(f"ok   {path}: {', '.join(sorted(required))}")
+          sys.exit(rc)
+          PY
+
+      - name: Python floor is 3.11 everywhere
+        run: |
+          set -euo pipefail
+          # No matrix cell at or below 3.10 may reappear through a default.
+          # This file is excluded: it necessarily mentions the versions it bans.
+          files="$(ls .github/workflows/*.yml templates/*.yml | grep -v 'self-test.yml')"
+          # shellcheck disable=SC2086
+          if grep -nE "python[-_ ]?version[^:]*:\s*['\"]?3\.(9|10)" $files; then
+            echo "::error::a Python version at or below 3.10 appears in a workflow default"
+            exit 1
+          fi
+          echo "ok   no Python <= 3.10 defaults"
