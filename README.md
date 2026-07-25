@@ -41,17 +41,133 @@ string/number/boolean/environment, and there is no radio-button type at all. So
 the dropdowns live in the dispatch surfaces and the reusable workflows take
 validated strings that refuse loudly on a bad value. Details in USAGE.md.
 
+## Branch-tier strictness
+
+Strictness is chosen by **the branch a change is targeting**, not by anything a
+caller sets. `reusable-fleet-ci.yml` resolves the tier once, centrally, in the
+`detect stack` job — from `github.base_ref` on a pull request, `github.ref_name`
+otherwise — against the `main-branches` input (default `main,master`). A caller
+cannot get the policy wrong, because a caller does not compute it.
+
+| | **dev tier** (`dev`, `devel`, `staging`, …) | **main tier** (`main` / `master`) |
+|---|---|---|
+| cargo | `check --workspace --all-targets`, `test --workspace` | the above **plus** a separate `--all-features` gate: `fmt --check`, `clippy -D warnings`, `check`, `test`, `doc` with `RUSTDOCFLAGS=-D warnings` |
+| python | ruff + pytest on 3.13 | ruff + `ruff format --check` + pytest on 3.11, 3.12, 3.13 |
+| GPU | skipped | **runs** on `[self-hosted, linux, x64, podman, gpu]` |
+| benchmarks | skipped | **run fresh**, `CARGO_INCREMENTAL=0` |
+| secrets | working-tree scan | full git-history scan |
+
+The two rows that matter most are GPU and benchmarks. At main tier they must
+**complete**, not skip — so both jobs assert they have something real to do and
+fail loudly if not:
+
+- `gpu tests` runs `nvidia-smi -L` first. No usable device and `gpu-required:
+  true` (the default) is an **error**, not a green skip. A GPU gate that
+  silently no-ops is worse than no gate, because it reads as coverage.
+- `benchmarks` refuses to pass when it finds no `benches/` directory and no
+  `[[bench]]` target.
+
+Both are opt-in per repo (`gpu: true`, `bench: true`) because most repos have
+neither, and a gate that fails on every repo is a gate everyone learns to ignore.
+
+The `gpu` label is what routes to `SizeTier::Gpu` (4 CPU / 8 GiB + device
+attach) in `gha-runner-ctl`; it is a real fleet tier, not a convention invented
+here.
+
+## Tag discipline
+
+**Callers pin `@v1`, a moving major tag.** That single decision is what makes
+"centrally keep the base workflows up to date" true in practice:
+
+```yaml
+uses: tzervas/mycelium-workflows/.github/workflows/reusable-fleet-ci.yml@v1
+```
+
+| change | what happens | who decides |
+|---|---|---|
+| patch / minor (`1.2.3` → `1.2.4`, `1.3.0`) | `v1` is repointed; every caller picks it up on its next run, with no PR in any repo | automatic, once `self-test` is green |
+| **major** (`1.x` → `2.0.0`) | `v2` is created; **`v1` freezes exactly where it is** | a human, per repo, by editing one line |
+
+`release-tag.yml` moves `v1` on every push to `main` whose `VERSION` still has
+major 1 — and only after `self-test` has passed **for that exact commit**. It
+polls rather than assumes, because for a tag that ~225 repos follow, "I could not
+tell" has to behave like "no".
+
+So a breaking change is not "a commit on `main`". It is an edit to `VERSION`
+that raises the major. That edit is the gate, and it costs downstream repos
+nothing until they choose to move.
+
+Dependency bumps follow the same split (`.github/dependabot.yml` plus
+`dependabot-automerge.yml`): minor and patch are grouped and auto-merged behind
+`self-test`; **majors get their own PR, the `major-bump` label, and never
+auto-merge** — they are both the breaking class and the only class that can
+force a `v2`.
+
 ## Do not rename these jobs
 
-`check`, `gitleaks`, and `trivy filesystem (vuln+secret+license)` are required
-status-check contexts in the `protec-main` / `protec-dev` rulesets on all 46
-repos. Renaming one silently un-gates every repo requiring it — and auto-merge is
-armed fleet-wide.
+Required status-check contexts in the `protec-main` / `protec-dev` rulesets:
+
+| workflow | contexts |
+|---|---|
+| `reusable-fleet-ci.yml` | `detect stack`, `cargo check/test`, `python lint/test`, `no stack detected` |
+| `reusable-fleet-security.yml` | `gitleaks`, `trivy filesystem (vuln+secret+license)` |
+| `reusable-rust-ci.yml` | `check` |
+
+Renaming one silently un-gates every repo requiring it — the context never
+reports, so the PR either blocks forever or, if the requirement is then dropped,
+merges unguarded. Auto-merge is armed on part of the fleet, which makes this
+sharp. `self-test.yml` asserts these names on every push, so the failure is loud
+here instead of silent there.
+
+Job names are **also** the fleet's sizing signal:
+`gha-runner-ctl::pool::size_for_job` derives the container CPU/RAM tier from the
+job name and `runs-on` labels. `cargo check/test` → Large, `cargo all-features
+gate` → Xlarge, `benchmarks` → Large, `gitleaks` / `trivy …` → Micro. Renaming a
+job silently changes its memory cap.
+
+## Never put `cancel-in-progress: true` on a scheduled scan
+
+A scheduled self-hosted workflow with an unconditional `cancel-in-progress: true`
+will silently **never run** if the fleet is not polling that repo: the run queues
+waiting for a runner, the next scheduled tick cancels it, and it reports
+`cancelled` — not `failed`. Nothing alerts, and the repo looks scanned. Observed
+live on this fleet (`tzervas/aNa`, `fleet-security` schedule runs reporting
+`cancelled`). The caller template therefore uses:
+
+```yaml
+cancel-in-progress: ${{ github.event_name != 'schedule' }}
+```
+
+## The fleet, measured
+
+The Mycelium train is 46 repos. The **fleet** is larger, and it had the same
+problem one level up. Measured 2026-07-25 across 239 non-archived, non-fork
+repos under `tzervas`:
+
+| | repos | distinct byte-variants |
+|---|--:|--:|
+| carry `fleet-ci.yml` | 225 | **15** |
+| carry `fleet-security.yml` | 225 | **6** |
+| carry neither | 14 | — |
+
+The variants are not per-repo policy; they are snapshots of the same file at
+different dates. The two dominant `fleet-ci.yml` variants cover 212 repos and
+differ only in the Rust-detection heuristic. On the security side the split is
+material: **124 repos still ran the pre-hardening scan that pulled
+`zricethezav/gitleaks:latest` unpinned and unauthenticated**, while 97 ran the
+pinned-and-checksummed version.
+
+`scripts/rollout-fleet-callers.sh` replaces both files with thin callers, one PR
+per repo, dry-run by default. It preserves each repo's real branch list — a repo
+whose PRs target `devel` gets `devel` in the trigger list, because that single
+omission is why one repo had nine open PRs with literally zero checks — and it
+detects GPU tests, benchmarks and pinned toolchains and passes them as inputs
+rather than dropping them.
 
 ## Scope groups
 
-`scripts/scope.py` is the single definition of the groups, verified to sum to the
-live train exactly:
+`scripts/scope.py` is the single definition of the Rust train's groups, verified
+to sum to the live train exactly:
 
 | group | repos |
 |---|--:|
@@ -63,11 +179,10 @@ live train exactly:
 
 ## Status
 
-Bootstrap. `reusable-rust-ci.yml`, `reusable-rust-security.yml` and
-`control-panel.yml` are in place; component repos are **not** yet migrated to call
-them — their existing in-repo workflows still run, so nothing regresses while the
-migration lands. Migration is a per-repo PR via
-`scripts/rollout-callers.sh`, deliberately gated behind `APPLY=1`.
+`reusable-fleet-ci.yml` and `reusable-fleet-security.yml` are the fleet-wide
+source of truth and are what `scripts/rollout-fleet-callers.sh` installs.
+`reusable-rust-ci.yml` / `reusable-rust-security.yml` remain the Mycelium train's
+narrower Rust-only gate (`check`) and are unchanged in contract.
 
 Reusable-workflow support for the `*-myc` (self-hosted Mycelium) train comes once
 that port is actively underway; nothing here presumes it.

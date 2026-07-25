@@ -1,0 +1,90 @@
+# Gate breaking changes; let non-breaking ones flow.
+#
+# The fleet pins this repo at `@v1`, so anything merged here that moves `v1`
+# reaches ~225 repos without a per-repo PR. The trade that makes that safe:
+#
+#   minor / patch  -> auto-merge, but only after this repo's own CI is green.
+#   MAJOR          -> label `major-bump`, explain why in a comment, and stop.
+#                     Auto-merge is never enabled. A human reviews it, and
+#                     decides whether it also means cutting `v2`.
+#
+# Deliberately no `contents: write` at the workflow level — `gh pr merge --auto`
+# needs only `pull-requests: write` plus the repo's own auto-merge setting.
+name: dependabot auto-merge
+
+on: pull_request_target
+
+permissions:
+  contents: read
+
+jobs:
+  triage:
+    name: dependabot triage
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Fetch dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Gate major bumps for human review
+        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.html_url }}
+          DEP: ${{ steps.meta.outputs.dependency-names }}
+          FROM: ${{ steps.meta.outputs.previous-version }}
+          TO: ${{ steps.meta.outputs.new-version }}
+        run: |
+          set -euo pipefail
+          gh pr edit "$PR" --add-label "major-bump" --add-label "needs-human"
+          gh pr comment "$PR" --body "$(cat <<EOF
+          **Major bump held for review — auto-merge deliberately not enabled.**
+
+          \`$DEP\`: \`$FROM\` -> \`$TO\`
+
+          This repo is pinned by roughly 225 fleet repos at the moving \`@v1\` tag, so
+          whatever lands here propagates without a per-repo PR. Majors are the breaking
+          class, which is exactly the class that must not propagate silently.
+
+          Before merging, answer two questions:
+
+          1. Does this change the behaviour of a job that is a **required status check**
+             (\`detect stack\`, \`cargo check/test\`, \`python lint/test\`, \`gitleaks\`,
+             \`trivy filesystem (vuln+secret+license)\`)? If yes, callers must be able to
+             opt in — add an input, do not change the default under them.
+          2. Does it change the **caller-facing contract** (an input renamed, removed, or
+             given different semantics)? If yes, this is a \`v2\`: bump \`VERSION\` to
+             \`2.0.0\`, which freezes \`v1\` where it is and lets repos migrate on their
+             own schedule.
+
+          If neither applies, merge it manually — it is a major version of a dependency,
+          not of this interface.
+          EOF
+          )"
+          echo "::notice::major bump held for review: $DEP $FROM -> $TO"
+
+      - name: Auto-merge minor and patch
+        if: |
+          steps.meta.outputs.update-type == 'version-update:semver-minor' ||
+          steps.meta.outputs.update-type == 'version-update:semver-patch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -euo pipefail
+          gh pr edit "$PR" --add-label "auto-merge"
+          # --auto waits for required checks; it does not bypass them. If this repo
+          # has no required checks configured, GitHub refuses and we fail loudly
+          # rather than merging something unverified.
+          if ! gh pr merge --auto --squash "$PR"; then
+            echo "::error::could not arm auto-merge. Most likely this repo has no required status checks," >&2
+            echo "::error::in which case arming it would merge an unverified change. Fix the ruleset, not this step." >&2
+            exit 1
+          fi
