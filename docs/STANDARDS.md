@@ -416,12 +416,32 @@ What was actually run, and what was not, stated plainly rather than implied.
   / 5,865 insertions behind `main`**, and `gha-runner-ctl`'s merge base measured at **`ace4fe32`**
   — the same numbers the contract records.
 
-**Verified in GitHub Actions** — `standards-selftest.yml` ran on `ubuntu-latest`
-([run 30180007075](https://github.com/tzervas/mycelium-workflows/actions/runs/30180007075)):
-the fixture suite passed, the checker ran against this repo, and `::error` annotations rendered
-with their WHAT/WHY/HOW bodies intact. It **correctly failed its own first PR** under
-`branch-targeting` — this repo has no `dev` branch, which is the bug that produced the
-empty-not-red handling above.
+**Verified in GitHub Actions.** `standards-selftest.yml` ran on `ubuntu-latest`:
+
+| run | result |
+|---|---|
+| [30180007075](https://github.com/tzervas/mycelium-workflows/actions/runs/30180007075) | **failure** — the gate correctly failed its own first PR under `branch-targeting`. This repo has no `dev` branch, so the rule demanded a target that does not exist. That is the bug the empty-not-red handling above fixes. |
+| [30180182991](https://github.com/tzervas/mycelium-workflows/actions/runs/30180182991) | **success** — after the fix |
+
+Real output from the passing run:
+
+```
+ok   .github/workflows/control-panel.yml
+ok   .github/workflows/reusable-rust-ci.yml
+ok   .github/workflows/reusable-rust-security.yml
+ok   .github/workflows/reusable-standards.yml
+ok   .github/workflows/standards-selftest.yml
+...
+35 assertion(s) passed, 0 failed
+...
+checked: `dev` does not exist on origin, so `main` is the only trunk — nothing to
+         enforce (empty, not unknown).
+standards: 0 error(s), 0 warning(s)
+```
+
+Confirmed by that pair: the fixture suite executes, the checker runs against a real repo,
+`::error` annotations render with their WHAT/WHY/HOW bodies intact, and the exit code drives the
+job status in both directions.
 
 **Not verified:**
 
