@@ -57,6 +57,15 @@ on:
         required: false
         type: string
         default: ''
+      setup-env:
+        description: >-
+          Newline-separated KEY=VALUE pairs exported for `setup-command` and every
+          later step in the job. Mirrors `test-env` in reusable-python-ci.yml.
+          Pass only values you control — never a PR title or body, which are
+          attacker-controllable and would be a script-injection channel.
+        required: false
+        type: string
+        default: ''
       clippy-extra-args:
         description: >-
           Extra args appended after `--` on the clippy invocation, e.g. a repo's
@@ -154,6 +163,21 @@ jobs:
         with:
           toolchain: ${{ inputs.rust-version }}
           components: rustfmt, clippy
+
+      - name: Export setup-env
+        if: inputs.setup-env != ''
+        env:
+          SETUP_ENV: ${{ inputs.setup-env }}
+        run: |
+          set -eu
+          # Literal KEY=VALUE lines, published to later steps. Never eval'd.
+          envfile="${RUNNER_TEMP:-/tmp}/rust-setup-env"
+          printf '%s\n' "$SETUP_ENV" > "$envfile"
+          while IFS= read -r kv; do
+            [ -n "$kv" ] || continue
+            printf '%s\n' "$kv" >> "$GITHUB_ENV"
+            echo "exported ${kv%%=*}"
+          done < "$envfile"
 
       - name: Repo setup
         if: inputs.setup-command != ''
