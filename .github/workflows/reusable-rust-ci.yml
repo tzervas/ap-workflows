@@ -49,6 +49,97 @@ on:
         required: false
         type: number
         default: 30
+      setup-command:
+        description: >-
+          Shell command run after checkout and toolchain install, before any
+          cargo step. For repos that must prepare their dependency graph first
+          (e.g. patching sister-project git deps). Empty = no setup step.
+        required: false
+        type: string
+        default: ''
+      setup-env:
+        description: >-
+          Newline-separated KEY=VALUE pairs exported for `setup-command` and every
+          later step in the job. Mirrors `test-env` in reusable-python-ci.yml.
+          Pass only values you control — never a PR title or body, which are
+          attacker-controllable and would be a script-injection channel.
+        required: false
+        type: string
+        default: ''
+      clippy-extra-args:
+        description: >-
+          Extra args appended after `--` on the clippy invocation, e.g. a repo's
+          existing `-A clippy::cast_precision_loss …` allow-list. This exists so
+          centralizing a repo does not silently RAISE its lint bar and break it;
+          carry the repo's current allow-list across verbatim, then tighten it in
+          a separate, visible PR.
+        required: false
+        type: string
+        default: ''
+      doc-args:
+        description: >-
+          Extra args appended to `cargo doc` at depth=full, e.g.
+          `--document-private-items`. Repos that already document private items
+          check MORE rustdoc warnings than the default; carry that across or the
+          migration silently narrows the doc gate.
+        required: false
+        type: string
+        default: ''
+      release-build:
+        description: >-
+          Also run `cargo build --release` in the check job. Off by default;
+          repos whose previous gate built a release binary (e.g. gha-runner-ctl)
+          must set this so centralizing does not drop that coverage.
+        required: false
+        type: boolean
+        default: false
+      bench:
+        description: >-
+          Benchmark mode: off | compile | run. `compile` is `cargo bench --no-run`
+          (the cheap dev-tier proof that benches still build); `run` executes them
+          to completion, which is what the main tier requires — a benchmark that
+          only compiles is not a fresh benchmark.
+        required: false
+        type: string
+        default: 'off'
+      bench-args:
+        description: 'Extra args appended to cargo bench, e.g. --bench config_parsing'
+        required: false
+        type: string
+        default: ''
+      bench-runner-labels:
+        description: 'JSON array of runner labels for the bench job. Empty = reuse runner-labels'
+        required: false
+        type: string
+        default: ''
+      bench-timeout-minutes:
+        description: 'Timeout for the bench job (running benches to completion is slower than compiling them)'
+        required: false
+        type: number
+        default: 60
+      gpu:
+        description: >-
+          Run the GPU job. Requires a runner carrying the fleet `gpu` label —
+          gha-runner-ctl resolves that label to the GPU size tier and attaches the
+          device. Off by default: most repos have no GPU surface.
+        required: false
+        type: boolean
+        default: false
+      gpu-runner-labels:
+        description: 'JSON array of runner labels for the GPU job'
+        required: false
+        type: string
+        default: '["self-hosted","linux","x64","podman","gpu"]'
+      gpu-features:
+        description: 'Cargo features enabling the GPU path, e.g. cuda'
+        required: false
+        type: string
+        default: 'cuda'
+      gpu-timeout-minutes:
+        description: 'Timeout for the GPU job'
+        required: false
+        type: number
+        default: 60
 
 env:
   CARGO_TERM_COLOR: always
@@ -72,9 +163,40 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@1.96.1
+      # `@master` + an explicit `toolchain:` is the parameterized form of this
+      # action. Pinning the action ref to `@1.96.1` (as this step previously did)
+      # installs 1.96.1 no matter what `rust-version` says — the input, and the
+      # control panel's toolchain dropdown behind it, were silently ignored.
+      # Silently defaulting is the exact failure mode this repo refuses elsewhere.
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ inputs.rust-version }}
           components: rustfmt, clippy
+
+      - name: Export setup-env
+        if: inputs.setup-env != ''
+        env:
+          SETUP_ENV: ${{ inputs.setup-env }}
+        run: |
+          set -eu
+          # Literal KEY=VALUE lines, published to later steps. Never eval'd.
+          envfile="${RUNNER_TEMP:-/tmp}/rust-setup-env"
+          printf '%s\n' "$SETUP_ENV" > "$envfile"
+          while IFS= read -r kv; do
+            [ -n "$kv" ] || continue
+            printf '%s\n' "$kv" >> "$GITHUB_ENV"
+            echo "exported ${kv%%=*}"
+          done < "$envfile"
+
+      - name: Repo setup
+        if: inputs.setup-command != ''
+        run: |
+          set -eu
+          # Some repos must patch sister-project git dependencies before cargo can
+          # resolve at all (axolotl-rs/.github/scripts/patch-dependencies.sh).
+          # Without this hook those repos simply cannot be centralized.
+          echo "setup: ${{ inputs.setup-command }}"
+          ${{ inputs.setup-command }}
 
       - name: Resolve flags
         id: f
@@ -99,7 +221,7 @@ jobs:
         run: cargo fmt --all --check
 
       - name: cargo clippy
-        run: cargo clippy --all-targets ${{ steps.f.outputs.feat }} -- ${{ steps.f.outputs.clip }}
+        run: cargo clippy --all-targets ${{ steps.f.outputs.feat }} -- ${{ steps.f.outputs.clip }} ${{ inputs.clippy-extra-args }}
 
       - name: cargo check
         if: inputs.depth != 'lint'
@@ -111,6 +233,94 @@ jobs:
 
       - name: cargo doc
         if: inputs.depth == 'full'
-        run: cargo doc --workspace --no-deps ${{ steps.f.outputs.feat }}
+        run: cargo doc --workspace --no-deps ${{ steps.f.outputs.feat }} ${{ inputs.doc-args }}
         env:
           RUSTDOCFLAGS: -D warnings
+
+      - name: cargo build --release
+        if: inputs.release-build
+        run: cargo build --release ${{ steps.f.outputs.feat }}
+
+  bench:
+    # Fresh benchmarks. The dev tier proves they still COMPILE (`compile`); the
+    # main tier requires them to COMPLETE (`run`), because a bench that only
+    # builds tells you nothing about performance regressions.
+    name: bench
+    if: inputs.bench != 'off'
+    runs-on: ${{ fromJSON(inputs.bench-runner-labels != '' && inputs.bench-runner-labels || inputs.runner-labels) }}
+    timeout-minutes: ${{ inputs.bench-timeout-minutes }}
+    steps:
+      - name: Validate bench mode (never-silent)
+        run: |
+          set -eu
+          case "${{ inputs.bench }}" in
+            off|compile|run) : ;;
+            *) echo "::error::bench must be off|compile|run, got '${{ inputs.bench }}'"; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.rust-version }}
+
+      - name: Repo setup
+        if: inputs.setup-command != ''
+        run: ${{ inputs.setup-command }}
+
+      - name: cargo bench
+        run: |
+          set -eu
+          feat=""
+          [ "${{ inputs.all-features }}" = "true" ] && feat="--all-features"
+          if [ "${{ inputs.bench }}" = "compile" ]; then
+            # shellcheck disable=SC2086
+            cargo bench --no-run $feat ${{ inputs.bench-args }}
+          else
+            # shellcheck disable=SC2086
+            cargo bench $feat ${{ inputs.bench-args }}
+          fi
+
+      - name: Archive criterion output
+        if: inputs.bench == 'run' && hashFiles('target/criterion/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-${{ github.run_id }}
+          path: target/criterion/
+          retention-days: 30
+
+  gpu:
+    # GPU coverage. A missing device is FAIL_ENV, never a pass: the fleet's
+    # standing rule is that absent hardware must not read as a green GPU suite.
+    name: gpu
+    if: inputs.gpu
+    runs-on: ${{ fromJSON(inputs.gpu-runner-labels) }}
+    timeout-minutes: ${{ inputs.gpu-timeout-minutes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.rust-version }}
+
+      - name: Repo setup
+        if: inputs.setup-command != ''
+        run: ${{ inputs.setup-command }}
+
+      - name: Assert a GPU is actually present
+        run: |
+          set -eu
+          if ! command -v nvidia-smi >/dev/null 2>&1; then
+            echo "::error title=FAIL_ENV::nvidia-smi missing on a runner labelled gpu — refusing to report a green GPU suite without a device"
+            exit 1
+          fi
+          nvidia-smi
+          if ! ls /dev/nvidia* /dev/dxg >/dev/null 2>&1; then
+            echo "::error title=FAIL_ENV::no /dev/nvidia* or /dev/dxg device node visible in the container"
+            exit 1
+          fi
+
+      - name: cargo test (GPU features)
+        run: cargo test --features '${{ inputs.gpu-features }}' -- --test-threads=1
+        env:
+          CUDA_VISIBLE_DEVICES: '0'
