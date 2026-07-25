@@ -1,61 +1,66 @@
-# Version policy for the central workflow repo.
+# Dependabot for the central workflow repo.
 #
-# The whole fleet pins these workflows at `@v1`, a moving major tag. That makes
-# this repo's dependency hygiene everyone's dependency hygiene, so the split is
-# deliberate:
+# This repo is the single point every caller in the fleet resolves through, so a
+# stale pinned action here is stale in every repo at once. That asymmetry is the
+# whole reason Dependabot belongs HERE rather than in 249 component repos.
 #
-#   minor + patch  ->  grouped, auto-merged by .github/workflows/dependabot-automerge.yml
-#                      once this repo's own CI is green. They reach the fleet on
-#                      the next `v1` move, with no per-repo PR.
-#   MAJOR          ->  its own PR, labelled `major-bump`, never auto-merged.
-#                      A major bump of an action is the breaking class, and it is
-#                      also the only class that can require moving the fleet from
-#                      `@v1` to `@v2`. A human decides.
-#
-# Grouping minor/patch into one PR per ecosystem is what keeps auto-merge from
-# generating a stream of individually-verified-then-immediately-stale PRs — the
-# propagation tax this fleet already pays on cargo git pins.
+# Scope note: `github-actions` covers .github/workflows/**, and — because the
+# composite action lives at .github/actions/app-token — a second entry with an
+# explicit directory is required. Dependabot does not recurse into composite
+# actions from the root entry.
 version: 2
+
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
       day: monday
-      time: "06:00"
-    open-pull-requests-limit: 10
+      time: '06:00'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
     commit-message:
-      prefix: "chore(deps)"
+      prefix: 'ci'
+      include: scope
     labels:
       - dependencies
       - github-actions
     groups:
-      # One PR for everything non-breaking. Auto-merged when CI is green.
+      # One PR for the routine bumps; anything major still arrives on its own so
+      # a breaking action change is never buried in a batch.
       actions-minor-patch:
-        applies-to: version-updates
+        patterns:
+          - '*'
         update-types:
           - minor
           - patch
-    # Majors are intentionally NOT grouped: each gets its own PR so the breaking
-    # change can be read, and the `v1` -> `v2` question answered, in isolation.
 
   - package-ecosystem: github-actions
-    # Reusable workflows and composite actions live outside the root workflow
-    # directory; dependabot needs to be pointed at them explicitly.
     directory: /.github/actions/app-token
     schedule:
       interval: weekly
       day: monday
-      time: "06:00"
-    open-pull-requests-limit: 5
+      time: '06:00'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
     commit-message:
-      prefix: "chore(deps)"
+      prefix: 'ci'
+      include: scope
     labels:
       - dependencies
       - github-actions
-    groups:
-      app-token-minor-patch:
-        applies-to: version-updates
-        update-types:
-          - minor
-          - patch
+
+  - package-ecosystem: terraform
+    directory: /terraform
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: 'ci'
+      include: scope
+    labels:
+      - dependencies
+      - terraform
