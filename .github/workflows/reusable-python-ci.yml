@@ -303,7 +303,11 @@ jobs:
         run: |
           set -eu
           if [ -n "$CUSTOM" ]; then
-            echo "::warning::test-command override is set — coverage is measured over pytest only and may not cover the custom suite"
+            # Measuring `coverage run -m pytest` here would run a DIFFERENT suite
+            # from the one this repo actually gates on, and report its number as
+            # if it described the real suite. Refuse to produce that figure.
+            echo "::warning::test-command override is set ('$CUSTOM') — coverage is NOT measured. A coverage number from a different suite than the one that gates this repo would be misleading."
+            exit 0
           fi
           if ! uv run coverage --version >/dev/null 2>&1; then
             uv pip install coverage pytest-cov
