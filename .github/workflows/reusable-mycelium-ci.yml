@@ -124,6 +124,8 @@ jobs:
 
       - name: Locate the Mycelium toolchain
         id: tc
+        env:
+          WANT: ${{ inputs.mycelium-version }}
         run: |
           set -eu
           # No install path is written here on purpose: there is no published
@@ -133,7 +135,23 @@ jobs:
             echo "::error::myc-check not found on this runner. Provision it on the runner image (see tzervas/mycelium-check). Skipping would report a checker pass that never ran."
             exit 1
           fi
-          myc-check --version || true
+          have="$(myc-check --version 2>/dev/null || true)"
+          echo "myc-check version: ${have:-<unreported>}"
+          # An accepted-then-ignored input is the same failure as pinning a
+          # toolchain in a `uses:` ref and reading the version from elsewhere:
+          # the caller is told it chose, and it did not. There is nothing to
+          # install from, so the only honest use of `mycelium-version` is to
+          # ASSERT it — and to refuse when the assertion cannot be made.
+          if [ -n "$WANT" ]; then
+            if [ -z "$have" ]; then
+              echo "::error::mycelium-version='$WANT' was requested but myc-check does not report a version, so the pin cannot be verified. Refusing rather than pretending it was honoured."
+              exit 1
+            fi
+            case "$have" in
+              *"$WANT"*) echo "pin satisfied: '$WANT' present in '$have'" ;;
+              *) echo "::error::mycelium-version='$WANT' requested, runner provides '$have'. This workflow cannot install a toolchain; fix the runner image."; exit 1 ;;
+            esac
+          fi
           echo "found=$(command -v myc-check)" >> "$GITHUB_OUTPUT"
 
       # ---- REAL step. This is what the *-myc train actually runs today. -------
@@ -164,6 +182,12 @@ jobs:
         if: inputs.depth == 'check+test' || inputs.depth == 'full'
         run: |
           set -eu
+          # `build-jobs` and `all-features` are accepted so the caller contract is
+          # stable across the languages, but there is no build to apply them to.
+          # They are named here rather than silently dropped: an input that is
+          # read and then ignored is how `rust-version` came to select a toolchain
+          # it did not select.
+          echo "build-jobs=${{ inputs.build-jobs }} all-features=${{ inputs.all-features }} — accepted, and NOT honoured, because the step below does not exist yet."
           echo "::error::PLACEHOLDER: there is no honest Mycelium build step yet."
           echo "Ordinary multi-statement Mycelium programs with host contact cannot yet compile and run end-to-end (DN-50 accept<->instantiate frontier; *-myc DELIVERY.md rows are Declared with no graduated nodule)."
           echo "When the compiler can build these projects, replace this step with the real invocation and delete this message. Until then depth must stay at lint|check."

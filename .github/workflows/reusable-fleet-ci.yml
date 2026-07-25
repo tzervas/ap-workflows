@@ -246,7 +246,7 @@ jobs:
 
       - name: Pin toolchain
         if: inputs.rust-version != ''
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ inputs.rust-version }}
 
@@ -278,7 +278,7 @@ jobs:
 
       - name: Pin toolchain
         if: inputs.rust-version != ''
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ inputs.rust-version }}
           components: rustfmt, clippy
@@ -353,7 +353,7 @@ jobs:
 
       - name: Pin toolchain
         if: inputs.rust-version != ''
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ inputs.rust-version }}
 
@@ -369,6 +369,8 @@ jobs:
             grep -qE '^\s*gpu\s*=' Cargo.toml && feat="--features gpu" || feat="--features cuda"
           fi
           echo "gpu feature flags: ${feat:-<none declared>}"
+          # $feat is a deliberate word-split flag pair, not an accident.
+          # shellcheck disable=SC2086
           cargo test --workspace $feat -- --include-ignored
 
   # ---------------------------------------------------------------------------
@@ -390,7 +392,7 @@ jobs:
 
       - name: Pin toolchain
         if: inputs.rust-version != ''
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ inputs.rust-version }}
 
