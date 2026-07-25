@@ -76,6 +76,15 @@ on:
         required: false
         type: string
         default: ''
+      doc-args:
+        description: >-
+          Extra args appended to `cargo doc` at depth=full, e.g.
+          `--document-private-items`. Repos that already document private items
+          check MORE rustdoc warnings than the default; carry that across or the
+          migration silently narrows the doc gate.
+        required: false
+        type: string
+        default: ''
       release-build:
         description: >-
           Also run `cargo build --release` in the check job. Off by default;
@@ -224,7 +233,7 @@ jobs:
 
       - name: cargo doc
         if: inputs.depth == 'full'
-        run: cargo doc --workspace --no-deps ${{ steps.f.outputs.feat }}
+        run: cargo doc --workspace --no-deps ${{ steps.f.outputs.feat }} ${{ inputs.doc-args }}
         env:
           RUSTDOCFLAGS: -D warnings
 
