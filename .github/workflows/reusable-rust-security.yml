@@ -1,0 +1,106 @@
+# Reusable security gate for the Mycelium train: gitleaks + trivy filesystem.
+#
+# Job names are `gitleaks` and `trivy filesystem (vuln+secret+license)` because
+# those are the contexts protec-main requires across the train. Renaming either
+# silently un-gates 46 repos.
+#
+# Sizing note: both are measured-cheap on this fleet — gitleaks peaks ~19 MiB and
+# trivy ~121 MiB. Trivy's real cost is ~1.2 GiB of DISK cache, not memory, which
+# is why they run comfortably on the fleet's micro tier (0.25 CPU / 512m).
+name: Reusable Rust Security
+
+on:
+  workflow_call:
+    inputs:
+      runner-labels:
+        description: 'JSON array of runner labels'
+        required: false
+        type: string
+        default: '["self-hosted","linux","x64","podman"]'
+      gitleaks-version:
+        description: 'Pinned gitleaks release'
+        required: false
+        type: string
+        default: '8.30.1'
+      trivy-severity:
+        description: 'Comma list: LOW,MEDIUM,HIGH,CRITICAL'
+        required: false
+        type: string
+        default: 'HIGH,CRITICAL'
+      full-history:
+        description: 'Scan full git history for secrets, not just the tree'
+        required: false
+        type: boolean
+        default: false
+      trivy-required:
+        description: 'Fail the job when trivy is missing on the runner. false = advisory skip'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: gitleaks
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Secret history needs full depth; tree-only scans do not pay for it.
+          fetch-depth: ${{ inputs.full-history && 0 || 1 }}
+
+      - name: Ensure gitleaks (pinned)
+        run: |
+          set -eu
+          if command -v gitleaks >/dev/null 2>&1; then
+            echo "using preinstalled $(command -v gitleaks)"
+            exit 0
+          fi
+          dir="${RUNNER_TEMP:-/tmp}/gitleaks-bin"
+          mkdir -p "$dir"
+          v="${{ inputs.gitleaks-version }}"
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${v}/gitleaks_${v}_linux_x64.tar.gz"
+          tmp="$(mktemp)"
+          curl --proto '=https' --tlsv1.2 -sSfL "$url" -o "$tmp"
+          tar -xzf "$tmp" -C "$dir" gitleaks
+          chmod 0755 "$dir/gitleaks"
+          echo "$dir" >> "$GITHUB_PATH"
+
+      - name: Run gitleaks
+        run: |
+          set -eu
+          if ! command -v gitleaks >/dev/null 2>&1; then
+            echo "::error::gitleaks unavailable after install — failing rather than reporting a clean scan" >&2
+            exit 1
+          fi
+          if [ "${{ inputs.full-history }}" = "true" ]; then
+            gitleaks detect --source . --verbose --redact --exit-code 1
+          else
+            gitleaks detect --source . --no-git --verbose --redact --exit-code 1
+          fi
+
+  trivy:
+    name: trivy filesystem (vuln+secret+license)
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy fs
+        run: |
+          set -eu
+          if ! command -v trivy >/dev/null 2>&1; then
+            if [ "${{ inputs.trivy-required }}" = "true" ]; then
+              echo "::error::trivy missing and trivy-required=true" >&2
+              exit 1
+            fi
+            echo "::warning::trivy missing on this runner — advisory skip."
+            echo "::warning::Install trivy on the runner image, or set trivy-required=true, for a hard gate."
+            exit 0
+          fi
+          trivy fs --scanners vuln,secret,license \
+            --severity "${{ inputs.trivy-severity }}" \
+            --exit-code 1 --no-progress .

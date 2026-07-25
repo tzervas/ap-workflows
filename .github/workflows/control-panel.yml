@@ -1,0 +1,181 @@
+# Fleet control panel — the human-facing selector surface.
+#
+# This is where the dropdowns live. GitHub only supports `type: choice` on
+# workflow_dispatch, so the reusable workflows take validated strings and this
+# workflow provides the pickers. Actions has no radio-button widget: a `choice`
+# input renders as a dropdown and a `boolean` renders as a checkbox. Those are
+# the only two selector shapes available, so "radio" is served by `choice`.
+#
+# Run it from Actions -> Fleet control panel -> Run workflow.
+name: Fleet control panel
+
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: 'Which repos to act on'
+        type: choice
+        options:
+          - this-repo-only
+          - compiler-core          # core, value, runtime, codegen, l1
+          - stdlib                 # mycelium-std-*
+          - tooling                # cli, fmt, lint, lsp, doc, proj, check, build, bench, sec, spore, transpile
+          - entire-rust-train      # all 46
+        default: this-repo-only
+      action:
+        description: 'What to run'
+        type: choice
+        options:
+          - ci
+          - security
+          - ci+security
+          - propagate-pins
+        default: ci
+      depth:
+        description: 'CI gate depth'
+        type: choice
+        options: [lint, check, check+test, full]
+        default: check+test
+      runner:
+        description: 'Where to run'
+        type: choice
+        options:
+          - github-hosted          # ubuntu-latest — immune to fleet capacity
+          - self-hosted-fleet      # podman fleet
+        default: github-hosted
+      rust_version:
+        description: 'Toolchain'
+        type: choice
+        options: ['1.96.1', 'stable', 'beta', 'nightly']
+        default: '1.96.1'
+      all_features:
+        description: 'Build with --all-features'
+        type: boolean
+        default: false
+      deny_warnings:
+        description: 'Treat clippy warnings as errors'
+        type: boolean
+        default: true
+      dry_run:
+        description: 'Resolve and print the plan without dispatching anything'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: control-panel
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: resolve selection
+    runs-on: ubuntu-latest
+    outputs:
+      repos: ${{ steps.pick.outputs.repos }}
+      labels: ${{ steps.pick.outputs.labels }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Expand scope to a repo list
+        id: pick
+        run: |
+          set -eu
+          case "${{ inputs.scope }}" in
+            this-repo-only)
+              repos='["${{ github.repository }}"]' ;;
+            compiler-core)
+              repos='["tzervas/mycelium-core","tzervas/mycelium-value","tzervas/mycelium-runtime","tzervas/mycelium-codegen","tzervas/mycelium-l1"]' ;;
+            stdlib)
+              repos="$(python3 scripts/scope.py stdlib)" ;;
+            tooling)
+              repos="$(python3 scripts/scope.py tooling)" ;;
+            entire-rust-train)
+              repos="$(python3 scripts/scope.py all)" ;;
+            *) echo "::error::unknown scope ${{ inputs.scope }}"; exit 1 ;;
+          esac
+          echo "repos=$repos" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ inputs.runner }}" = "self-hosted-fleet" ]; then
+            echo 'labels=["self-hosted","linux","x64","podman"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'labels=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Plan
+        run: |
+          {
+            echo "### Control panel selection"
+            echo ""
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| scope | \`${{ inputs.scope }}\` |"
+            echo "| action | \`${{ inputs.action }}\` |"
+            echo "| depth | \`${{ inputs.depth }}\` |"
+            echo "| runner | \`${{ inputs.runner }}\` |"
+            echo "| toolchain | \`${{ inputs.rust_version }}\` |"
+            echo "| all-features | \`${{ inputs.all_features }}\` |"
+            echo "| deny-warnings | \`${{ inputs.deny_warnings }}\` |"
+            echo "| dry run | \`${{ inputs.dry_run }}\` |"
+            echo ""
+            echo "Resolved repos: \`${{ steps.pick.outputs.repos }}\`"
+            echo ""
+            echo "Runner labels: \`${{ steps.pick.outputs.labels }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Runs the selected gate here, against this repo, when scope is this-repo-only.
+  local-ci:
+    name: local ci
+    needs: resolve
+    if: inputs.scope == 'this-repo-only' && (inputs.action == 'ci' || inputs.action == 'ci+security')
+    uses: ./.github/workflows/reusable-rust-ci.yml
+    with:
+      rust-version: ${{ inputs.rust_version }}
+      depth: ${{ inputs.depth }}
+      runner-labels: ${{ needs.resolve.outputs.labels }}
+      all-features: ${{ inputs.all_features }}
+      deny-warnings: ${{ inputs.deny_warnings }}
+
+  local-security:
+    name: local security
+    needs: resolve
+    if: inputs.scope == 'this-repo-only' && (inputs.action == 'security' || inputs.action == 'ci+security')
+    uses: ./.github/workflows/reusable-rust-security.yml
+    with:
+      runner-labels: ${{ needs.resolve.outputs.labels }}
+
+  # Fan out to component repos. Needs a cross-repo token, and refuses loudly
+  # without one rather than reporting a successful no-op.
+  fan-out:
+    name: dispatch to selected repos
+    needs: resolve
+    if: inputs.scope != 'this-repo-only'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch
+        env:
+          GH_TOKEN: ${{ secrets.FLEET_PROPAGATE_TOKEN }}
+        run: |
+          set -eu
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::secret FLEET_PROPAGATE_TOKEN is required to dispatch into other repositories."
+            echo "::error::The workflow-scoped GITHUB_TOKEN cannot. Refusing rather than reporting a no-op."
+            exit 1
+          fi
+          # One line on purpose: a bare newline at column 0 inside this block
+          # scalar would terminate the YAML block.
+          echo '${{ needs.resolve.outputs.repos }}' \
+            | python3 -c "import json,sys; [print(r) for r in json.load(sys.stdin)]" > repos.txt
+          n=0
+          while read -r repo; do
+            [ -n "$repo" ] || continue
+            n=$((n+1))
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              echo "[dry-run] would dispatch ${{ inputs.action }} to $repo"
+              continue
+            fi
+            gh workflow run ci.yml --repo "$repo" 2>/dev/null \
+              || echo "::warning::could not dispatch ci.yml on $repo (missing workflow_dispatch trigger?)"
+          done < repos.txt
+          echo "repos targeted: $n  dry_run=${{ inputs.dry_run }}"
