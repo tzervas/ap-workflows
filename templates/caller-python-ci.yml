@@ -1,0 +1,58 @@
+# Component-repo Python CI. Install as .github/workflows/ci.yml
+#
+# Same shape as templates/caller-ci.yml (Rust) — deliberately, so a caller reads
+# the same regardless of language. See that file for the @v1 moving-tag and
+# tiering rationale.
+#
+#   tier    depth        runner            matrix
+#   ------  -----------  ----------------  ------------------------------------
+#   dev     check+test   github-hosted     none
+#   main    full         self-hosted fleet 3.11 / 3.12 / 3.13 breadth (advisory)
+#
+# VERSION FLOOR: nothing at or below 3.10 is permitted anywhere in this file; the
+# reusable workflow validates that and refuses loudly. Prefer 3.13.
+name: ci
+
+on:
+  workflow_dispatch:
+    inputs:
+      depth:
+        description: 'Gate depth (overrides the tier default)'
+        type: choice
+        options: [lint, check, check+test, full]
+        default: check+test
+      runner:
+        description: 'Where to run'
+        type: choice
+        options: [github-hosted, self-hosted-fleet]
+        default: github-hosted
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    uses: tzervas/mycelium-workflows/.github/workflows/reusable-python-ci.yml@v1
+    with:
+      python-version: '3.13'
+      depth: >-
+        ${{ inputs.depth
+            || ((github.base_ref || github.ref_name) == 'main' && 'full' || 'check+test') }}
+      runner-labels: >-
+        ${{ (inputs.runner == 'self-hosted-fleet'
+             || (inputs.runner == '' && (github.base_ref || github.ref_name) == 'main'))
+            && '["self-hosted","linux","x64","podman"]'
+            || '["ubuntu-latest"]' }}
+      # Breadth only at the main tier; the required context stays the single
+      # `check` job either way.
+      python-versions: >-
+        ${{ (github.base_ref || github.ref_name) == 'main'
+            && '["3.11","3.12","3.13"]' || '[]' }}

@@ -1,0 +1,55 @@
+# Component-repo Shell CI. Install as .github/workflows/ci.yml
+#
+# Same shape as templates/caller-ci.yml (Rust). See that file for the @v1
+# moving-tag and tiering rationale.
+#
+#   tier    depth        runner            notes
+#   ------  -----------  ----------------  -----------------------------------
+#   dev     check        github-hosted     shellcheck + parse
+#   main    check+test   self-hosted fleet + bats where a suite exists
+#
+# depth=full additionally gates formatting with shfmt; enable it only where the
+# runner image actually carries shfmt, because the reusable workflow FAILS rather
+# than skipping when a requested tool is missing.
+name: ci
+
+on:
+  workflow_dispatch:
+    inputs:
+      depth:
+        description: 'Gate depth (overrides the tier default)'
+        type: choice
+        options: [lint, check, check+test, full]
+        default: check
+      runner:
+        description: 'Where to run'
+        type: choice
+        options: [github-hosted, self-hosted-fleet]
+        default: github-hosted
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    uses: tzervas/mycelium-workflows/.github/workflows/reusable-shell-ci.yml@v1
+    with:
+      depth: >-
+        ${{ inputs.depth
+            || ((github.base_ref || github.ref_name) == 'main' && 'check+test' || 'check') }}
+      runner-labels: >-
+        ${{ (inputs.runner == 'self-hosted-fleet'
+             || (inputs.runner == '' && (github.base_ref || github.ref_name) == 'main'))
+            && '["self-hosted","linux","x64","podman"]'
+            || '["ubuntu-latest"]' }}
+      # SC1091 (cannot follow sourced file) is the one exclusion the fleet's
+      # scripts routinely need; add others only with a reason in the caller.
+      exclude-codes: 'SC1091'

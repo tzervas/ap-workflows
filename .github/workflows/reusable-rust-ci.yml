@@ -49,6 +49,61 @@ on:
         required: false
         type: number
         default: 30
+      release-build:
+        description: >-
+          Also run `cargo build --release` in the check job. Off by default;
+          repos whose previous gate built a release binary (e.g. gha-runner-ctl)
+          must set this so centralizing does not drop that coverage.
+        required: false
+        type: boolean
+        default: false
+      bench:
+        description: >-
+          Benchmark mode: off | compile | run. `compile` is `cargo bench --no-run`
+          (the cheap dev-tier proof that benches still build); `run` executes them
+          to completion, which is what the main tier requires — a benchmark that
+          only compiles is not a fresh benchmark.
+        required: false
+        type: string
+        default: 'off'
+      bench-args:
+        description: 'Extra args appended to cargo bench, e.g. --bench config_parsing'
+        required: false
+        type: string
+        default: ''
+      bench-runner-labels:
+        description: 'JSON array of runner labels for the bench job. Empty = reuse runner-labels'
+        required: false
+        type: string
+        default: ''
+      bench-timeout-minutes:
+        description: 'Timeout for the bench job (running benches to completion is slower than compiling them)'
+        required: false
+        type: number
+        default: 60
+      gpu:
+        description: >-
+          Run the GPU job. Requires a runner carrying the fleet `gpu` label —
+          gha-runner-ctl resolves that label to the GPU size tier and attaches the
+          device. Off by default: most repos have no GPU surface.
+        required: false
+        type: boolean
+        default: false
+      gpu-runner-labels:
+        description: 'JSON array of runner labels for the GPU job'
+        required: false
+        type: string
+        default: '["self-hosted","linux","x64","podman","gpu"]'
+      gpu-features:
+        description: 'Cargo features enabling the GPU path, e.g. cuda'
+        required: false
+        type: string
+        default: 'cuda'
+      gpu-timeout-minutes:
+        description: 'Timeout for the GPU job'
+        required: false
+        type: number
+        default: 60
 
 env:
   CARGO_TERM_COLOR: always
@@ -114,3 +169,79 @@ jobs:
         run: cargo doc --workspace --no-deps ${{ steps.f.outputs.feat }}
         env:
           RUSTDOCFLAGS: -D warnings
+
+      - name: cargo build --release
+        if: inputs.release-build
+        run: cargo build --release ${{ steps.f.outputs.feat }}
+
+  bench:
+    # Fresh benchmarks. The dev tier proves they still COMPILE (`compile`); the
+    # main tier requires them to COMPLETE (`run`), because a bench that only
+    # builds tells you nothing about performance regressions.
+    name: bench
+    if: inputs.bench != 'off'
+    runs-on: ${{ fromJSON(inputs.bench-runner-labels != '' && inputs.bench-runner-labels || inputs.runner-labels) }}
+    timeout-minutes: ${{ inputs.bench-timeout-minutes }}
+    steps:
+      - name: Validate bench mode (never-silent)
+        run: |
+          set -eu
+          case "${{ inputs.bench }}" in
+            off|compile|run) : ;;
+            *) echo "::error::bench must be off|compile|run, got '${{ inputs.bench }}'"; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.96.1
+
+      - name: cargo bench
+        run: |
+          set -eu
+          feat=""
+          [ "${{ inputs.all-features }}" = "true" ] && feat="--all-features"
+          if [ "${{ inputs.bench }}" = "compile" ]; then
+            # shellcheck disable=SC2086
+            cargo bench --no-run $feat ${{ inputs.bench-args }}
+          else
+            # shellcheck disable=SC2086
+            cargo bench $feat ${{ inputs.bench-args }}
+          fi
+
+      - name: Archive criterion output
+        if: inputs.bench == 'run' && hashFiles('target/criterion/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-${{ github.run_id }}
+          path: target/criterion/
+          retention-days: 30
+
+  gpu:
+    # GPU coverage. A missing device is FAIL_ENV, never a pass: the fleet's
+    # standing rule is that absent hardware must not read as a green GPU suite.
+    name: gpu
+    if: inputs.gpu
+    runs-on: ${{ fromJSON(inputs.gpu-runner-labels) }}
+    timeout-minutes: ${{ inputs.gpu-timeout-minutes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.96.1
+
+      - name: Assert a GPU is actually present
+        run: |
+          set -eu
+          if ! command -v nvidia-smi >/dev/null 2>&1; then
+            echo "::error title=FAIL_ENV::nvidia-smi missing on a runner labelled gpu — refusing to report a green GPU suite without a device"
+            exit 1
+          fi
+          nvidia-smi
+          if ! ls /dev/nvidia* /dev/dxg >/dev/null 2>&1; then
+            echo "::error title=FAIL_ENV::no /dev/nvidia* or /dev/dxg device node visible in the container"
+            exit 1
+          fi
+
+      - name: cargo test (GPU features)
+        run: cargo test --features '${{ inputs.gpu-features }}' -- --test-threads=1
+        env:
+          CUDA_VISIBLE_DEVICES: '0'

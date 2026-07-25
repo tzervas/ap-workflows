@@ -1,10 +1,31 @@
 # mycelium-workflows
 
-Centralized, parameterized reusable workflows for the **Mycelium Rust train**.
+Centralized, parameterized reusable workflows for the **whole Mycelium fleet** —
+not just the Rust train.
 
-The train is 46 component repositories that all carried byte-identical copies of
-the same four workflows — 45 of 46 `ci.yml` files were literally identical. Any
-policy change meant 46 PRs. This repo makes it one commit.
+The Rust train is 46 component repositories that all carried byte-identical
+copies of the same four workflows — 45 of 46 `ci.yml` files were literally
+identical. Any policy change meant 46 PRs. This repo makes it one commit.
+
+The fleet is larger than the train. Measured 2026-07-25 across **249
+non-archived** repositories (the 7 archived repos are out of scope):
+
+| primary language | repos | reusable workflow |
+|---|--:|---|
+| Rust | 93 | `reusable-rust-ci.yml` |
+| Shell | 49 | `reusable-shell-ci.yml` |
+| *(none detected)* | 48 | — no code gate to centralize |
+| Python | 47 | `reusable-python-ci.yml` |
+| Go | 4 | not covered — see USAGE.md |
+| TypeScript | 2 | not covered — see USAGE.md |
+| Makefile | 2 | — |
+| Dockerfile | 2 | — |
+| HCL | 1 | — |
+| Batchfile | 1 | — |
+
+47 of those non-archived repos are the `*-myc` native-language train.
+`reusable-mycelium-ci.yml` is **prepped and deliberately not adopted** — see
+below and the header of the file itself.
 
 See **[USAGE.md](USAGE.md)** for the full interface and **[TOKENS.md](TOKENS.md)** for the
 three-token model (they are *not* interchangeable — `FLEET_DISPATCH_TOKEN` is far
@@ -23,10 +44,26 @@ on:
   pull_request: { branches: [main, dev] }
 jobs:
   check:
-    uses: tzervas/mycelium-workflows/.github/workflows/reusable-rust-ci.yml@main
+    uses: tzervas/mycelium-workflows/.github/workflows/reusable-rust-ci.yml@v1
     with:
       depth: check+test
 ```
+
+Swap `reusable-rust-ci.yml` for `reusable-python-ci.yml` or
+`reusable-shell-ci.yml` and the caller is otherwise identical — the input names
+and semantics are the same across languages on purpose.
+
+## Version pin: `@v1` is a moving major tag
+
+Callers pin `@v1`, not `@main` and not a SHA:
+
+* **minor / patch changes propagate automatically.** A policy fix reaches every
+  caller without a PR per repo — the entire reason this repo exists.
+* **major changes do not.** A breaking change lands on `v2`; every caller opts in
+  deliberately. That is the gate.
+
+`v1` is force-moved to each new `v1.x.y` release commit. `@main` is for
+development of this repo only; a caller pinning `@main` gets un-reviewed policy.
 
 ## Selector surface
 
@@ -63,11 +100,32 @@ live train exactly:
 
 ## Status
 
-Bootstrap. `reusable-rust-ci.yml`, `reusable-rust-security.yml` and
-`control-panel.yml` are in place; component repos are **not** yet migrated to call
-them — their existing in-repo workflows still run, so nothing regresses while the
-migration lands. Migration is a per-repo PR via
-`scripts/rollout-callers.sh`, deliberately gated behind `APPLY=1`.
+| workflow | state |
+|---|---|
+| `reusable-rust-ci.yml` | in use; rollout underway |
+| `reusable-rust-security.yml` | in use |
+| `reusable-python-ci.yml` | ready; rollout underway |
+| `reusable-shell-ci.yml` | ready; not yet rolled out |
+| `reusable-mycelium-ci.yml` | **prepped, NOT adopted — see below** |
+| `control-panel.yml` | in use |
 
-Reusable-workflow support for the `*-myc` (self-hosted Mycelium) train comes once
-that port is actively underway; nothing here presumes it.
+Component repos migrate one PR at a time; their existing in-repo workflows keep
+running until a PR replaces the overlapping portion, so nothing regresses while
+the migration lands.
+
+### `reusable-mycelium-ci.yml` is not a working gate
+
+It is committed so adoption later is a one-line caller change, and it refuses to
+run unless the caller passes `acknowledge-not-adopted: true`.
+
+Per the project's own status, ordinary multi-statement Mycelium programs that
+contact the host cannot yet compile and run end-to-end — the accept↔instantiate
+frontier of DN-50, and the `Declared` posture of every `*-myc` `DELIVERY.md`. So:
+
+* the **checker** step (`myc-check --project lib`) is real — it is what the train
+  already runs by hand;
+* the **build** and **test** steps are explicit placeholders that **fail loudly**.
+  They are not `echo ok`, because a fabricated green gate on 47 repos is worse
+  than no gate at all.
+
+Do not roll this out. Do not wire its `check` job into branch protection.

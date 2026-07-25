@@ -1,0 +1,66 @@
+# Dependabot for the central workflow repo.
+#
+# This repo is the single point every caller in the fleet resolves through, so a
+# stale pinned action here is stale in every repo at once. That asymmetry is the
+# whole reason Dependabot belongs HERE rather than in 249 component repos.
+#
+# Scope note: `github-actions` covers .github/workflows/**, and — because the
+# composite action lives at .github/actions/app-token — a second entry with an
+# explicit directory is required. Dependabot does not recurse into composite
+# actions from the root entry.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'ci'
+      include: scope
+    labels:
+      - dependencies
+      - github-actions
+    groups:
+      # One PR for the routine bumps; anything major still arrives on its own so
+      # a breaking action change is never buried in a batch.
+      actions-minor-patch:
+        patterns:
+          - '*'
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /.github/actions/app-token
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: 'ci'
+      include: scope
+    labels:
+      - dependencies
+      - github-actions
+
+  - package-ecosystem: terraform
+    directory: /terraform
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: 'ci'
+      include: scope
+    labels:
+      - dependencies
+      - terraform
