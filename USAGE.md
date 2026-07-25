@@ -242,3 +242,25 @@ cpu-limited container — cargo would otherwise spawn one rustc per host core (2
 here) and blow the memory cap. Measured on `mycelium-codegen`: 333 MiB at `-j2`
 versus **1848 MiB** at the unpinned default. Only set `cargo-jobs` explicitly if
 you are overriding that deliberately.
+
+## Inputs that exist so centralizing never costs coverage
+
+| input | workflow | why it exists |
+|---|---|---|
+| `setup-command` | rust | some repos must patch sister-project git deps before cargo can resolve at all (`axolotl-rs/.github/scripts/patch-dependencies.sh`). Without the hook those repos cannot be centralized. |
+| `clippy-extra-args` | rust | carries a repo's existing `-A clippy::…` allow-list across verbatim. Centralizing must not silently *raise* a repo's lint bar and break it; tighten it afterwards in a visible PR. |
+| `release-build` | rust | `gha-runner-ctl`'s gate builds a release binary. Dropping that on migration would be a regression. |
+| `test-env` | python | `tg-agent-relay`'s `tests/run-tests.sh` needs `RELAY_PYTHON` pointing at the synced venv. Literal `KEY=VALUE` lines with `$PWD` substituted; the value is never `eval`'d. |
+| `test-command` | python | a repo's suite is not always bare `pytest`. |
+
+## Fixed: `rust-version` was accepted and ignored
+
+`reusable-rust-ci.yml` declared a `rust-version` input, documented it, and
+`control-panel.yml` surfaced it as a dropdown (`1.96.1` / `stable` / `beta` /
+`nightly`) and passed it through — but the toolchain step pinned the *action ref*
+(`dtolnay/rust-toolchain@1.96.1`), which installs 1.96.1 regardless of any input.
+Selecting `nightly` in the control panel silently ran 1.96.1.
+
+It now uses `dtolnay/rust-toolchain@master` with `toolchain: ${{ inputs.rust-version }}`,
+so the input and the dropdown behind it mean what they say. Default is unchanged
+at `1.96.1`.

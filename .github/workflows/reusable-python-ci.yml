@@ -80,6 +80,15 @@ on:
         required: false
         type: string
         default: ''
+      test-env:
+        description: >-
+          Newline-separated KEY=VALUE pairs exported before the test step. Exists
+          for suites that need a pointer to the synced interpreter (tg-agent-relay's
+          tests/run-tests.sh needs RELAY_PYTHON) — without it, centralizing such a
+          repo would quietly drop its real test invocation.
+        required: false
+        type: string
+        default: ''
       coverage-min:
         description: 'Minimum line coverage percent at depth=full. 0 = measure and report, do not gate'
         required: false
@@ -253,8 +262,23 @@ jobs:
           DENY: ${{ inputs.deny-warnings }}
           CUSTOM: ${{ inputs.test-command }}
           JOBS: ${{ inputs.test-jobs }}
+          TESTENV: ${{ inputs.test-env }}
         run: |
           set -eu
+          if [ -n "$TESTENV" ]; then
+            # Literal KEY=VALUE, with the single token $PWD substituted so a caller
+            # can point at the synced venv. No eval: caller input is never executed.
+            envfile="${RUNNER_TEMP:-/tmp}/py-test-env"
+            printf '%s\n' "$TESTENV" > "$envfile"
+            while IFS= read -r kv; do
+              [ -n "$kv" ] || continue
+              k="${kv%%=*}"
+              v="${kv#*=}"
+              v="$(printf '%s' "$v" | sed "s#\$PWD#$PWD#g")"
+              export "${k}=${v}"
+              echo "exported ${k}"
+            done < "$envfile"
+          fi
           if [ -n "$CUSTOM" ]; then
             echo "running repo test command: $CUSTOM"
             # shellcheck disable=SC2086
