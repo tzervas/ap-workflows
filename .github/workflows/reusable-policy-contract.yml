@@ -163,7 +163,7 @@ on:
         description: 'Repository holding scripts/standards_check.py.'
         required: false
         type: string
-        default: tzervas/mycelium-workflows
+        default: tzervas/ap-workflows
       standards-ref:
         description: >-
           Fallback ref for the checker checkout. Normally unused: `github.job_workflow_sha`

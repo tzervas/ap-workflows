@@ -36,7 +36,7 @@ permissions:
 
 jobs:
   standards:
-    uses: tzervas/mycelium-workflows/.github/workflows/reusable-policy-contract.yml@main
+    uses: tzervas/ap-workflows/.github/workflows/reusable-policy-contract.yml@main
 ```
 
 That reports one status context: **`standards / standards`**. Read the next section before you
@@ -151,9 +151,10 @@ tolerated by omission: heads matching `main-allowed-heads` (default `dev`, `sec`
 
 If the integration branch **does not exist on origin**, the rule reports *empty* and passes. A
 rule demanding a target that does not exist is red for a reason nobody can act on, and that is
-how red stops meaning anything. `mycelium-workflows` itself is such a repo — verified when this
-gate failed its own first PR for targeting `main`, which was the only branch available. Point
-`integration-branch` elsewhere if your repo integrates somewhere other than `dev`.
+how red stops meaning anything. This repo — under the name it carried before the `ap-workflows`
+rename — is such a repo, verified when this gate failed its own first PR for targeting `main`,
+which was the only branch available. Point `integration-branch` elsewhere if your repo integrates
+somewhere other than `dev`.
 
 ### 11. Trunk divergence — the post-merge detector
 
@@ -430,7 +431,7 @@ gh label create human-authorized-1x --repo tzervas/<repo> \
 ## Running it locally
 
 ```bash
-git clone https://github.com/tzervas/mycelium-workflows /tmp/mw
+git clone https://github.com/tzervas/ap-workflows /tmp/mw
 cd /path/to/your/repo
 STD_REPO_ROOT=$PWD GITHUB_REPOSITORY=tzervas/your-repo \
   python3 /tmp/mw/scripts/standards_check.py
@@ -503,8 +504,8 @@ the checker script, not this repo's own PRs) ran on `ubuntu-latest`:
 
 | run | result |
 |---|---|
-| [30180007075](https://github.com/tzervas/mycelium-workflows/actions/runs/30180007075) | **failure** — the gate correctly failed its own first PR under `branch-targeting`. This repo has no `dev` branch, so the rule demanded a target that does not exist. That is the bug the empty-not-red handling above fixes. |
-| [30180182991](https://github.com/tzervas/mycelium-workflows/actions/runs/30180182991) | **success** — after the fix |
+| [30180007075](https://github.com/tzervas/ap-workflows/actions/runs/30180007075) | **failure** — the gate correctly failed its own first PR under `branch-targeting`. This repo has no `dev` branch, so the rule demanded a target that does not exist. That is the bug the empty-not-red handling above fixes. |
+| [30180182991](https://github.com/tzervas/ap-workflows/actions/runs/30180182991) | **success** — after the fix |
 
 Real output from the passing run:
 

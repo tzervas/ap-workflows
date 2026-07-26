@@ -215,6 +215,13 @@ jobs:
           # ruff exits non-zero on findings by default. `deny-warnings: false`
           # downgrades the gate to advisory but still prints every finding — it
           # never hides them.
+          # standards-allow: exit-contract — the `||` below is reached only when the
+          # caller has explicitly opted OUT of the gate via `deny-warnings: false`
+          # (the input defaults to `true`, i.e. enforced). ruff's own
+          # --output-format=github still emits every finding as a visible annotation
+          # in both branches, so nothing is hidden here — the caller made an
+          # informed, opt-in choice to make this step advisory, which is a
+          # different shape than a tool silently swallowing its own failure.
           if [ "$DENY" = "true" ]; then
             uv run ruff check --output-format=github ${{ steps.layout.outputs.paths }}
           else
