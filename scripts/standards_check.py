@@ -458,13 +458,20 @@ def rule_promote_merge_mode(cfg: Config) -> RuleResult:
     res.findings.append(Finding(
         rule="promote-merge-mode",
         title=f"merge this {edge} with a MERGE COMMIT",
-        what=(f"`{head}` -> `{base}` must land as a merge commit. Squash is enabled repo-wide "
-              "because work-branch -> dev needs it, and GitHub has no per-branch merge-method "
-              "setting — so on this edge the button choice is the only thing standing between "
-              "the fleet and a disjoint history."),
+        what=(f"`{head}` -> `{base}` must land as a merge commit. Whether the wrong button even "
+              f"exists depends on the ruleset covering `{base}`: a `pull_request` rule with "
+              "`allowed_merge_methods: [\"merge\"]` removes squash and rebase for this branch "
+              "only, leaving squash available on the work-branch edge. Until that is set, the "
+              "button choice is the only thing standing between the fleet and a disjoint "
+              "history."),
         why=SQUASH_DAMAGE,
         how=(f"gh pr merge {pr.get('number')} --merge\n"
-             "or press \"Create a merge commit\" — NOT \"Squash and merge\"."),
+             "or press \"Create a merge commit\" — NOT \"Squash and merge\".\n"
+             "Better, once, by the operator — make the wrong button impossible:\n"
+             "  gh api repos/OWNER/REPO/rulesets --jq '.[] | \"\\(.id) \\(.name)\"'\n"
+             "  # then PUT the default-branch ruleset's pull_request rule with\n"
+             "  #   \"allowed_merge_methods\": [\"merge\"]\n"
+             "  # (PUT, not PATCH — PATCH returns 404 and reads like a permissions error)"),
         # Informational by construction: this fires on every correct promote too, and a
         # rule that fails the PR it is only teaching would get switched off.
         cap=NOTICE,

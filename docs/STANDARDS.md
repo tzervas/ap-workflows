@@ -271,15 +271,60 @@ Do not name the caller's job `lint` or give it a name containing `lint`, `fmt`, 
 This workflow **never changes a repository setting**. Repo settings are the real lever for the
 merge-mode rule, and they are the operator's to pull.
 
-### Allowed merge methods
+### Allowed merge methods — this rule can be made structural
 
-GitHub has **no per-target-branch merge-method setting**. The fleet needs squash for
-work-branch → `dev` *and* merge commits for `dev` → `main`, so both must be enabled repo-wide and
-the promote is protected by this check plus discipline, not by settings alone. Say that out loud
-rather than pretending a settings command solves it.
+**Correction.** An earlier revision of this document said GitHub has no per-target-branch
+merge-method setting. **That was wrong**, and it is worth reading how it was wrong, because it is
+the §5a failure this document warns about: a confident claim that made a better answer invisible.
 
-What settings *can* do is remove the third, silently-damaging option and guarantee the correct
-button exists:
+A **ruleset's `pull_request` rule carries `allowed_merge_methods`, scoped to that ruleset's branch
+pattern.** Confirmed live on `tzervas/gha-runner-ctl`:
+
+```json
+{"type": "pull_request", "parameters": {
+  "allowed_merge_methods": ["merge", "squash", "rebase"], ...}}
+```
+
+Because a ruleset targets `~DEFAULT_BRANCH` while the integration branches sit in a different
+ruleset, the two edges **can** be governed separately:
+
+```bash
+# on the DEFAULT-BRANCH ruleset only: merge commits are the sole option.
+# Squashing a dev -> main promote stops being a mistake anyone can make.
+gh api -X PUT repos/tzervas/<repo>/rulesets/<default-branch-ruleset-id> \
+  --input - <<'JSON'
+{"rules": [
+  {"type": "deletion"},
+  {"type": "non_fast_forward"},
+  {"type": "pull_request", "parameters": {
+     "required_approving_review_count": 0,
+     "dismiss_stale_reviews_on_push": false,
+     "require_code_owner_review": false,
+     "require_last_push_approval": false,
+     "required_review_thread_resolution": false,
+     "allowed_merge_methods": ["merge"]}}
+]}
+JSON
+
+# verify by reading it back — never trust the write
+gh api repos/tzervas/<repo>/rulesets/<id> \
+  --jq '[.rules[]|select(.type=="pull_request").parameters.allowed_merge_methods][0]'
+```
+
+Work-branch → `dev` keeps squash, because the integration ruleset has no `pull_request` rule and
+therefore imposes no method restriction.
+
+**This converts rule 1 from detection into prevention.** The checker can only observe an armed
+auto-merge and teach the human; the ruleset removes the button. Where both are in place, the
+ruleset is the enforcement and the check is the explanation of why.
+
+Note the API shape: repository rulesets are updated with **`PUT`**, not `PATCH` — `PATCH` returns
+`404`, which reads like a permissions problem and is not one. Rulesets also have **no
+`description` field**: it accepts the key and reads back `null`, so the "why" has to live in the
+ruleset *name* and in docs like this one.
+
+Repo-wide settings remain worth setting as a second layer — they decide which buttons exist at
+all, for branches no ruleset covers:
 
 ```bash
 # per repo — merge commits available, squash kept for the work-branch edge,
@@ -306,21 +351,54 @@ for r in gha-runner-ctl tg-agent-relay; do
 done
 ```
 
-### Protecting the trunk set
+### Protecting the trunk set — two rulesets, four branch classes
 
-Rule 3 catches a workflow that *would* force-push a trunk. Only a ruleset stops a human:
+Rule 3 catches a workflow that *would* force-push a trunk. Only a ruleset stops a human.
+
+**One ruleset's `conditions.ref_name.include` takes multiple patterns**, so do not create one per
+branch. Two rulesets cover everything, and the names state scope and mechanism so a blocked PR is
+diagnosable without opening either:
+
+| ruleset | covers | rules | the name says |
+|---|---|---|---|
+| `trunk-default-gated` | `~DEFAULT_BRANCH` | deletion, non_fast_forward, pull_request, required_status_checks | default branch, **gated** = checks required |
+| `trunk-integration-guarded` | `refs/heads/dev`, `refs/heads/sec`, `refs/heads/release/**` | deletion, non_fast_forward | integration branches, **guarded** = delete/force-push only |
+
+A default branch with a `pull_request` rule but **no** required checks is neither: name it
+`trunk-default-pr-only-UNGATED` so the gap is visible in the ruleset list rather than discovered
+during an incident.
+
+Why two and not five: five rulesets is five places for the `refs/heads/"dev"` quoting bug to
+hide, and drift between near-identical rulesets is the actual cost — not the extra objects.
 
 ```bash
-gh api -X POST repos/tzervas/<repo>/rulesets \
-  -f name='protec-trunk' -f target=branch -f enforcement=active \
-  -f 'conditions[ref_name][include][]=refs/heads/main' \
-  -f 'conditions[ref_name][include][]=refs/heads/dev' \
-  -f 'conditions[ref_name][include][]=refs/heads/sec' \
-  -f 'rules[][type]=deletion' \
-  -f 'rules[][type]=non_fast_forward'
+gh api -X POST repos/tzervas/<repo>/rulesets --input - <<'JSON'
+{"name": "trunk-integration-guarded", "target": "branch", "enforcement": "active",
+ "conditions": {"ref_name": {"include": ["refs/heads/dev","refs/heads/sec","refs/heads/release/**"],
+                             "exclude": []}},
+ "rules": [{"type": "deletion"}, {"type": "non_fast_forward"}]}
+JSON
+
+# read it back — a write you did not verify is a protection you are guessing about
+gh api repos/tzervas/<repo>/rulesets --jq '.[] | "\(.id) \(.name)"'
 ```
 
-`non_fast_forward` is the force-push block; `deletion` is the delete block.
+`non_fast_forward` is the force-push block; `deletion` is the delete block. Renaming a ruleset
+changes nothing it enforces, so rename and consolidate in **one pass per repo** — never leave a
+repo with two half-named rulesets covering overlapping patterns.
+
+### Org-level rulesets — the structural fix
+
+Everything above is per repo. GitHub also supports **organization-level rulesets** that apply
+across every repo in the org.
+
+At **239 non-archived, non-fork repos**, the per-repo model needs **478 rulesets** kept in sync by
+automation — 478 places for a pattern typo or a phantom required context to hide. **Two
+org-level rulesets replace all 478**, and drift stops being something to monitor and becomes
+structurally impossible.
+
+These repos are on a **personal account**, so org rulesets are not available today. When the org
+migration happens, this is the first thing to move.
 
 ### Requiring this check
 
@@ -374,10 +452,13 @@ python3 scripts/standards_selftest.py
 
 State these rather than let the gate imply more coverage than it has.
 
-* **The merge button is not observable.** GitHub exposes the *armed auto-merge* method and the
-  repo's *allowed* methods; it does not expose which button a human is about to press. Rule 1
-  therefore closes the unattended path and teaches the attended one, and rule 11 detects the
-  damage afterwards. It cannot prevent a determined human click.
+* **The merge button is not observable *by CI*.** GitHub exposes the *armed auto-merge* method
+  and the repo's *allowed* methods; it does not expose which button a human is about to press.
+  Rule 1 closes the unattended path and teaches the attended one; rule 11 detects the damage
+  afterwards. **A check cannot prevent a determined human click — a ruleset can.** Set
+  `allowed_merge_methods: ["merge"]` on the `pull_request` rule of the default-branch ruleset and
+  the wrong button stops existing. Do that first; this gate is then the explanation rather than
+  the enforcement.
 * **Repo-settings assertions need a privileged token.** With the default `GITHUB_TOKEN` the
   `allow_*` fields are absent, and the checker reports "not asserted" instead of guessing.
 * **`docs-with-change` cannot judge whether the docs are *right*.** It only sees that some moved.
