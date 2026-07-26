@@ -1,14 +1,25 @@
 # This repo's own gate. It is the thing standing between an auto-merged patch
-# bump and ~225 repos, so it checks two things that actually matter:
+# bump and ~225 repos, so it checks the things that actually matter:
 #
-#   1. every workflow parses;
+#   1. every workflow AND template YAML parses;
 #   2. the required status-check contexts still exist, spelled exactly as the
-#      fleet's rulesets require them.
+#      fleet's rulesets require them;
+#   3. no reference to this repo's old name survives anywhere in the tree.
 #
-# (2) is the important one. Renaming a job does not fail loudly anywhere else:
-# the required context simply stops reporting, and the PR either blocks forever
-# or merges unguarded. This makes that failure mode loud, here, before the tag
-# moves.
+# (2) is the important structural one. Renaming a job does not fail loudly
+# anywhere else: the required context simply stops reporting, and the PR
+# either blocks forever or merges unguarded. This makes that failure mode
+# loud, here, before the tag moves.
+#
+# (3) exists because of a verified failure: gha-runner-ctl PR #51 calls
+# `mycelium-workflows/.github/workflows/reusable-standards.yml@main`.
+# `mycelium-workflows` is this repo's OLD name (renamed to `ap-workflows`);
+# GitHub transparently redirects the old name, so the reference resolves and
+# LOOKS valid. But `reusable-standards.yml` never existed at that old path
+# either, so the call is a zero-job startup_failure — and it reports green,
+# because a workflow that fails to start is not a required check. This step
+# exists so that class of silently-broken reference cannot reappear here
+# without turning this gate red.
 name: self-test
 
 on:
@@ -39,7 +50,7 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Every workflow parses
+      - name: Every workflow and template parses
         run: |
           set -euo pipefail
           python3 -m pip install --quiet pyyaml
@@ -54,6 +65,29 @@ jobs:
             fi
           done
           exit "$rc"
+
+      - name: No stale reference to this repo's old name
+        run: |
+          set -euo pipefail
+          # This repo was renamed from mycelium-workflows to ap-workflows.
+          # GitHub transparently redirects the old name, so a stale reference
+          # still resolves and LOOKS valid instead of failing loudly — see
+          # gha-runner-ctl PR #51, which calls a file under the old name that
+          # exists in no repo and still reports green (a zero-job
+          # startup_failure is not a required check).
+          #
+          # This file is excluded from its own scan: it is the one place
+          # expected to name the banned string, to explain why the check
+          # exists, and a file documenting a banned string necessarily
+          # contains it. Every other file in the tree is fair game — legitimate
+          # mentions of the Mycelium *language* (a different string, no
+          # trailing "-workflows") are untouched by this check.
+          old_name="mycelium-workflows"
+          if grep -rIn --exclude-dir=.git --exclude=self-test.yml "$old_name" .; then
+            echo "::error::stale reference to '$old_name' found above — this repo is now ap-workflows; the old name only 'works' via GitHub's redirect and hides real breakage (see gha-runner-ctl PR #51)"
+            exit 1
+          fi
+          echo "ok   no stale '$old_name' references found"
 
       - name: Required status-check contexts are intact
         run: |
