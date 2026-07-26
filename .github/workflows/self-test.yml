@@ -28,11 +28,15 @@
 # literal value is assembled instead.
 name: self-test
 
+# Fires on BOTH trunks. Work lands on `dev` first and is promoted to `main` in a
+# separate release PR, so gating only `main` would mean the gate never runs on the
+# PRs it exists to gate — every dev-targeted PR would report CLEAN because no check
+# ran, which is indistinguishable from a check that passed. Zero checks is not green.
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 concurrency:
