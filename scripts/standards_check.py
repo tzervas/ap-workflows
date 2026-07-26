@@ -1560,7 +1560,7 @@ def main() -> int:
                 what=f"{type(exc).__name__}: {exc}",
                 why=("A rule that crashed measured nothing. Contract 4a: unknown must fail "
                      "loudly rather than pass quietly."),
-                how="Report this against tzervas/mycelium-workflows scripts/standards_check.py.",
+                how="Report this against tzervas/ap-workflows scripts/standards_check.py.",
                 unknown=True)])
 
         for line in result.checked:
@@ -1604,7 +1604,7 @@ def main() -> int:
         summary += detail
     summary.append("")
     summary.append("Rules, toggles and the operator settings commands: "
-                   "[`docs/STANDARDS.md`](https://github.com/tzervas/mycelium-workflows/blob/"
+                   "[`docs/STANDARDS.md`](https://github.com/tzervas/ap-workflows/blob/"
                    "main/docs/STANDARDS.md)")
 
     out = env("GITHUB_STEP_SUMMARY")
