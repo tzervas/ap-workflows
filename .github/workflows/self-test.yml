@@ -1,0 +1,152 @@
+# This repo's own gate. It is the thing standing between an auto-merged patch
+# bump and ~225 repos, so it checks two things that actually matter:
+#
+#   1. every workflow parses;
+#   2. the required status-check contexts still exist, spelled exactly as the
+#      fleet's rulesets require them.
+#
+# (2) is the important one. Renaming a job does not fail loudly anywhere else:
+# the required context simply stops reporting, and the PR either blocks forever
+# or merges unguarded. This makes that failure mode loud, here, before the tag
+# moves.
+name: self-test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: self-test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: validate workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Every workflow parses
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet pyyaml
+          rc=0
+          for f in .github/workflows/*.yml .github/actions/*/action.yml templates/*.yml; do
+            [ -e "$f" ] || continue
+            if python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" "$f"; then
+              echo "ok   $f"
+            else
+              echo "::error file=$f::does not parse as YAML"
+              rc=1
+            fi
+          done
+          exit "$rc"
+
+      - name: Required status-check contexts are intact
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys, yaml
+
+          # These names are required contexts in the fleet's protec-main /
+          # protec-dev rulesets. Changing one here silently un-gates every repo
+          # that requires it.
+          CONTRACT = {
+              ".github/workflows/reusable-ci-autodetect.yml": {
+                  "detect stack", "cargo check/test", "python lint/test",
+                  "no stack detected",
+              },
+              ".github/workflows/reusable-scan-secrets-vuln.yml": {
+                  "gitleaks", "trivy filesystem (vuln+secret+license)",
+              },
+              ".github/workflows/reusable-ci-rust.yml": {"check"},
+              ".github/workflows/reusable-rust-security.yml": {
+                  "gitleaks", "trivy filesystem (vuln+secret+license)",
+              },
+              ".github/workflows/reusable-ci-python.yml": {"check"},
+              ".github/workflows/reusable-ci-shell.yml": {"check"},
+              # reusable-ci-mycelium.yml is deliberately absent: it is prep-only,
+              # refuses to run without `acknowledge-not-adopted: true`, and must
+              # never become a required context on any repo.
+          }
+
+          rc = 0
+          for path, required in CONTRACT.items():
+              doc = yaml.safe_load(open(path))
+              present = {j.get("name", k) for k, j in doc["jobs"].items()}
+              missing = required - present
+              if missing:
+                  rc = 1
+                  for m in sorted(missing):
+                      print(f"::error file={path}::required status-check context "
+                            f"'{m}' is gone. Renaming it does not fail loudly in the "
+                            f"fleet — the context just never reports.")
+              else:
+                  print(f"ok   {path}: {', '.join(sorted(required))}")
+          sys.exit(rc)
+          PY
+
+      - name: Python floor is 3.11 everywhere
+        run: |
+          set -euo pipefail
+          # No matrix cell at or below 3.10 may reappear through a default.
+          # This file is excluded: it necessarily mentions the versions it bans.
+          files=()
+          for f in .github/workflows/*.yml templates/*.yml; do
+            [ "$(basename "$f")" = "self-test.yml" ] && continue
+            files+=("$f")
+          done
+          if grep -nE "python[-_ ]?version[^:]*:\s*['\"]?3\.(9|10)" "${files[@]}"; then
+            echo "::error::a Python version at or below 3.10 appears in a workflow default"
+            exit 1
+          fi
+          echo "ok   no Python <= 3.10 defaults"
+
+      - name: VERSION and .cz.toml agree
+        run: |
+          set -euo pipefail
+          # The same fact written twice. Drift between them points release-tag.yml
+          # at the wrong series without anything else failing.
+          v_file="$(tr -d '[:space:]' < VERSION)"
+          v_cz="$(sed -n 's/^version *= *"\(.*\)"/\1/p' .cz.toml | head -1)"
+          if [ "$v_file" != "$v_cz" ]; then
+            echo "::error::VERSION ($v_file) and .cz.toml version ($v_cz) disagree"
+            exit 1
+          fi
+          if ! printf '%s' "$v_file" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::VERSION must be MAJOR.MINOR.PATCH, got '$v_file'"
+            exit 1
+          fi
+          echo "ok   VERSION = .cz.toml version = $v_file"
+
+      - name: The moving pin is v0.MINOR, never v1
+        run: |
+          set -euo pipefail
+          # major_version_zero = true puts the breaking position on the MINOR, so
+          # the tag callers pin is vMAJOR.MINOR. A bare-major pin would resolve
+          # to a tag that does not exist: the caller fails with "unable to find
+          # reusable workflow", fleet-wide, with no other warning.
+          if grep -rnE 'ap-workflows/\.github/workflows/[a-z-]+\.yml@v[0-9]+($|[^.0-9])' \
+               templates .github/workflows scripts README.md USAGE.md; then
+            echo "::error::a caller pins a bare major tag (@vN). While this repo is 0.x the moving tag is v0.MINOR."
+            exit 1
+          fi
+          expected="v$(cut -d. -f1,2 < VERSION)"
+          if ! grep -q "@${expected}\b" templates/caller-ci-rust.yml; then
+            echo "::error::templates/caller-ci-rust.yml does not pin @${expected} (derived from VERSION)"
+            exit 1
+          fi
+          echo "ok   moving pin is ${expected}"

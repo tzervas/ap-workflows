@@ -1,0 +1,38 @@
+# Commitizen configuration (commitizen-tools).
+# Install (optional): pip install commitizen  OR  uv tool install commitizen
+# This file is valid without the CLI: agents and humans follow the same rules by
+# hand. Matches tzervas/gha-runner-ctl/.cz.toml in shape — one fleet convention,
+# not one per repo.
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "0.1.0"
+tag_format = "v$version"
+version_scheme = "semver"
+major_version_zero = true
+
+# Keep these files lockstep on every release bump. `self-test.yml` asserts that
+# VERSION and the version above agree, because a drift between them silently
+# points the moving tag at the wrong series.
+version_files = [
+    "VERSION",
+]
+
+update_changelog_on_bump = true
+changelog_file = "CHANGELOG.md"
+changelog_incremental = true
+
+# MAJOR_VERSION_ZERO — READ THIS BEFORE BUMPING
+#
+# Under `major_version_zero = true` the MINOR is the breaking position, not the
+# major. `cz bump` maps a `feat!:` / `BREAKING CHANGE:` commit to 0.1.x -> 0.2.0
+# while the major stays 0.
+#
+# The consequence for callers: the moving tag they pin is `v0.1`, not `v1`.
+# `v0.1` is repointed across every v0.1.x patch; a breaking change creates `v0.2`
+# and FREEZES `v0.1` exactly where it is. There is no `v1` in this repo and there
+# will not be one until the interface is declared stable and the major is
+# deliberately raised to 1.
+#
+#   cz bump --increment PATCH   0.1.0 -> 0.1.1   v0.1 moves
+#   cz bump --increment MINOR   0.1.1 -> 0.2.0   v0.2 created, v0.1 frozen

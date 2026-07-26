@@ -1,0 +1,150 @@
+# Move the tag the fleet is pinned to.
+#
+# THE CONTRACT
+# ------------
+# This repo is 0.x under `major_version_zero = true` (.cz.toml), which means the
+# MINOR is the breaking position, not the major. So the tag callers pin is
+# `v0.1` — MAJOR.MINOR — not `v1`. There is no `v1` in this repo.
+#
+# `v0.1` is a MOVING tag: it is repointed at every green commit on main whose
+# `VERSION` is still in the 0.1 series. That is what makes a central security fix
+# or a dependency patch reach ~225 repos with no per-repo PR.
+#
+# A breaking change is therefore not "a commit on main" — it is an edit to
+# `VERSION` that raises the breaking position. Raising it to `0.2.0` creates
+# `v0.2` and leaves `v0.1` frozen exactly where it was, so every caller keeps
+# working and migrates by editing one line, on its own schedule. That edit is the
+# human gate.
+#
+# When the interface is eventually declared stable, `VERSION` goes to `1.0.0`,
+# `major_version_zero` is turned off, and the moving tag becomes `v1` — at which
+# point the major is once again the breaking position. Until that deliberate
+# step, this workflow refuses to create a bare `v1`.
+#
+# The tag only moves when `self-test` has passed for this exact commit. An
+# auto-merged patch bump that broke a required context does not get to propagate.
+name: release-tag
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'terraform/**'
+  workflow_dispatch:
+
+concurrency:
+  # Never cancel a tag move in flight — a half-moved tag is worse than a slow one.
+  group: release-tag
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  move-tag:
+    name: move moving tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read VERSION
+        id: v
+        run: |
+          set -euo pipefail
+          [ -f VERSION ] || { echo "::error::VERSION file missing"; exit 1; }
+          version="$(tr -d '[:space:]' < VERSION)"
+          if ! printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::VERSION must be MAJOR.MINOR.PATCH, got '$version'"
+            exit 1
+          fi
+          # Keep VERSION and .cz.toml lockstep: they are the same fact written
+          # twice, and a drift between them points the moving tag at the wrong
+          # series without anything failing.
+          cz_version="$(sed -n 's/^version *= *"\(.*\)"/\1/p' .cz.toml | head -1)"
+          if [ "$cz_version" != "$version" ]; then
+            echo "::error::VERSION ($version) and .cz.toml version ($cz_version) disagree"
+            exit 1
+          fi
+
+          major="${version%%.*}"
+          rest="${version#*.}"
+          minor="${rest%%.*}"
+
+          # major_version_zero = true: at 0.x the MINOR is the breaking
+          # position, so the moving tag is vMAJOR.MINOR (v0.1), not vMAJOR.
+          # At 1.0.0 and above the major is the breaking position again.
+          if [ "$major" = "0" ]; then
+            moving="v${major}.${minor}"
+          else
+            moving="v${major}"
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "moving=$moving"   >> "$GITHUB_OUTPUT"
+          echo "VERSION=$version -> moving tag $moving"
+
+      - name: Require self-test green for this commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Poll rather than assume: the tag is the fleet's propagation channel,
+          # so "I could not tell" must behave like "no", not like "yes".
+          for i in $(seq 1 40); do
+            state="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${GITHUB_SHA}" \
+              --jq '[.workflow_runs[] | select(.name=="self-test")] | sort_by(.created_at) | last
+                    | "\(.status)/\(.conclusion)"' 2>/dev/null || echo "none")"
+            echo "attempt $i: self-test = $state"
+            case "$state" in
+              completed/success) echo "self-test green"; exit 0 ;;
+              completed/*)       echo "::error::self-test is $state for ${GITHUB_SHA} — not moving the tag"; exit 1 ;;
+            esac
+            sleep 30
+          done
+          echo "::error::timed out waiting for self-test on ${GITHUB_SHA}. Not moving the tag." >&2
+          echo "::error::A tag that moves on an unverified commit is the whole risk this gate exists to prevent." >&2
+          exit 1
+
+      - name: Move the moving tag
+        env:
+          MOVING: ${{ steps.v.outputs.moving }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # A bare `v1` while VERSION is still 0.x would be a lie about
+          # stability, and the fleet's callers do not pin it. Refuse loudly.
+          case "$MOVING" in
+            v0.*) : ;;
+            *)
+              echo "::error::refusing to create '$MOVING'. This repo is 0.x under"
+              echo "::error::major_version_zero = true; the moving tag must be v0.MINOR."
+              echo "::error::Leaving 0.x is a deliberate change to .cz.toml, not a side effect."
+              exit 1
+              ;;
+          esac
+
+          git config user.name  "ap-workflows[bot]"
+          git config user.email "noreply@github.com"
+          # The exact-version tag is immutable and created once; only the
+          # MAJOR.MINOR tag moves.
+          if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+            echo "v${VERSION} already tagged — leaving it alone"
+          else
+            git tag -a "v${VERSION}" -m "ap-workflows v${VERSION}"
+            git push origin "v${VERSION}"
+          fi
+          git tag -f -a "$MOVING" -m "moving tag -> v${VERSION} (${GITHUB_SHA})"
+          git push -f origin "$MOVING"
+          {
+            echo "### Moved \`$MOVING\` -> \`v${VERSION}\`"
+            echo ""
+            echo "Commit \`${GITHUB_SHA}\`. Every caller pinned at \`@$MOVING\` picks this up on its next run."
+          } >> "$GITHUB_STEP_SUMMARY"

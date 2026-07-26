@@ -1,0 +1,204 @@
+# Reusable Mycelium-language CI — PREPPED, NOT YET ADOPTED.
+#
+# ┌────────────────────────────────────────────────────────────────────────────┐
+# │ STATUS: no repo calls this workflow, and none should yet.                  │
+# │ It exists so that adoption later is a one-line caller change rather than   │
+# │ a design exercise. Nothing here is a working gate today.                   │
+# └────────────────────────────────────────────────────────────────────────────┘
+#
+# WHY IT IS NOT ADOPTED (stated honestly, per the project's own posture)
+#
+# The `*-myc` repos (47 non-archived, measured 2026-07-25) are the native
+# Mycelium-language implementations. Per the project's own status, ordinary
+# multi-statement Mycelium programs that contact the host cannot yet compile and
+# run end-to-end: the accept↔instantiate frontier documented in DN-50
+# ("Parsable-vs-Runnable Gap Analysis") is exactly the gap where the parser and
+# checker ACCEPT a construct that the elaborator, monomorphizer or runtime cannot
+# yet instantiate. The `*-myc` DELIVERY.md files say the same thing from the other
+# side: their content is `Declared`, with "no graduated Mycelium nodule exists for
+# this component yet", and the only thing actually run at delivery is a checker
+# pass (`myc-check --project lib` → "CLEAN — ok: N file(s) checked, no findings").
+#
+# Therefore:
+#   * A `check` step (myc-check over the project) is REAL — it is what the train
+#     already runs by hand, and it is written below without placeholders.
+#   * A `build` step and a `test` step CANNOT be written honestly today. They are
+#     marked PLACEHOLDER below and they FAIL LOUDLY instead of reporting green.
+#     Do not "temporarily" turn them into `echo ok` — that is precisely the
+#     fabricated-green this fleet's never-silent rule (G2) exists to prevent.
+#
+# The input shape mirrors reusable-ci-rust.yml exactly, so when the language is
+# ready the caller is identical in shape to every other language in the fleet:
+#
+#   rust                     mycelium                meaning
+#   ----------------------   ---------------------   ------------------------------
+#   rust-version             mycelium-version        the one pinned toolchain
+#   depth                    depth                   lint | check | check+test | full
+#   runner-labels            runner-labels           JSON array for runs-on
+#   cargo-jobs               build-jobs              parallelism; 0 = inherit
+#   all-features             all-features            widen the compiled surface
+#   deny-warnings            deny-warnings           findings are errors
+#   timeout-minutes          timeout-minutes         job timeout
+name: Reusable Mycelium CI (not yet adopted)
+
+on:
+  workflow_call:
+    inputs:
+      mycelium-version:
+        description: 'Pinned Mycelium toolchain / myc-check revision. Empty = whatever the runner image provides'
+        required: false
+        type: string
+        default: ''
+      depth:
+        description: 'Gate depth: lint | check | check+test | full'
+        required: false
+        type: string
+        default: 'check'
+      runner-labels:
+        description: 'JSON array of runner labels'
+        required: false
+        type: string
+        default: '["self-hosted","linux","x64","podman"]'
+      build-jobs:
+        description: 'Compiler parallelism. 0 = inherit (the fleet exports a job count from the container CPU quota)'
+        required: false
+        type: number
+        default: 0
+      all-features:
+        description: 'Widen the compiled surface once features exist'
+        required: false
+        type: boolean
+        default: false
+      deny-warnings:
+        description: 'myc-check findings are errors'
+        required: false
+        type: boolean
+        default: true
+      timeout-minutes:
+        description: 'Job timeout'
+        required: false
+        type: number
+        default: 30
+      project-dir:
+        description: 'Project root passed to myc-check (the *-myc train uses `lib`)'
+        required: false
+        type: string
+        default: 'lib'
+      acknowledge-not-adopted:
+        description: >-
+          Must be true for this workflow to run at all. It is a deliberate speed
+          bump: this gate is incomplete by design, and wiring it into branch
+          protection today would advertise coverage that does not exist.
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  check:
+    # Same job name as every other reusable in this repo. When this workflow is
+    # eventually adopted, `check` is the context a caller wires into protection —
+    # but NOT before the placeholder steps below are replaced with real ones.
+    name: check
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - name: Refuse unless adoption is acknowledged (never-silent)
+        run: |
+          set -eu
+          if [ "${{ inputs.acknowledge-not-adopted }}" != "true" ]; then
+            echo "::error::reusable-ci-mycelium.yml is PREPPED, NOT ADOPTED. Multi-statement Mycelium programs with host contact cannot yet compile and run (DN-50 accept<->instantiate frontier), so depth>=check+test has no honest implementation. Pass acknowledge-not-adopted: true only if you understand that this workflow gates the checker pass and nothing else."
+            exit 1
+          fi
+          echo "::warning::reusable-ci-mycelium.yml is a PARTIAL gate: myc-check only. It does NOT build and does NOT test."
+
+      - name: Validate depth (never-silent)
+        run: |
+          set -eu
+          case "${{ inputs.depth }}" in
+            lint|check|check+test|full) : ;;
+            *) echo "::error::depth must be lint|check|check+test|full, got '${{ inputs.depth }}'"; exit 1 ;;
+          esac
+          echo "depth=${{ inputs.depth }}"
+
+      - uses: actions/checkout@v4
+
+      - name: Locate the Mycelium toolchain
+        id: tc
+        env:
+          WANT: ${{ inputs.mycelium-version }}
+        run: |
+          set -eu
+          # No install path is written here on purpose: there is no published
+          # myc-check release artifact to pin, so inventing a download URL would
+          # be a guess dressed as infrastructure. The runner image must provide it.
+          if ! command -v myc-check >/dev/null 2>&1; then
+            echo "::error::myc-check not found on this runner. Provision it on the runner image (see tzervas/mycelium-check). Skipping would report a checker pass that never ran."
+            exit 1
+          fi
+          have="$(myc-check --version 2>/dev/null || true)"
+          echo "myc-check version: ${have:-<unreported>}"
+          # An accepted-then-ignored input is the same failure as pinning a
+          # toolchain in a `uses:` ref and reading the version from elsewhere:
+          # the caller is told it chose, and it did not. There is nothing to
+          # install from, so the only honest use of `mycelium-version` is to
+          # ASSERT it — and to refuse when the assertion cannot be made.
+          if [ -n "$WANT" ]; then
+            if [ -z "$have" ]; then
+              echo "::error::mycelium-version='$WANT' was requested but myc-check does not report a version, so the pin cannot be verified. Refusing rather than pretending it was honoured."
+              exit 1
+            fi
+            case "$have" in
+              *"$WANT"*) echo "pin satisfied: '$WANT' present in '$have'" ;;
+              *) echo "::error::mycelium-version='$WANT' requested, runner provides '$have'. This workflow cannot install a toolchain; fix the runner image."; exit 1 ;;
+            esac
+          fi
+          echo "found=$(command -v myc-check)" >> "$GITHUB_OUTPUT"
+
+      # ---- REAL step. This is what the *-myc train actually runs today. -------
+      - name: myc-check (real)
+        run: |
+          set -eu
+          dir='${{ inputs.project-dir }}'
+          [ -d "$dir" ] || { echo "::error::project-dir '$dir' does not exist"; exit 1; }
+          out="$(myc-check --project "$dir" 2>&1)" || rc=$?
+          printf '%s\n' "$out"
+          rc="${rc:-0}"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::myc-check exited $rc"
+            exit "$rc"
+          fi
+          # `FINDINGS` on the *-myc repos today reflects Declared seed-draft files.
+          # deny-warnings decides whether that blocks; it is never hidden either way.
+          if printf '%s' "$out" | grep -q 'FINDINGS'; then
+            if [ "${{ inputs.deny-warnings }}" = "true" ]; then
+              echo "::error::myc-check reported FINDINGS and deny-warnings=true"
+              exit 1
+            fi
+            echo "::warning::myc-check reported FINDINGS; deny-warnings=false so they are advisory"
+          fi
+
+      # ---- PLACEHOLDER. Fails on purpose. Do not make this echo success. -----
+      - name: Build (PLACEHOLDER — no honest implementation exists)
+        if: inputs.depth == 'check+test' || inputs.depth == 'full'
+        run: |
+          set -eu
+          # `build-jobs` and `all-features` are accepted so the caller contract is
+          # stable across the languages, but there is no build to apply them to.
+          # They are named here rather than silently dropped: an input that is
+          # read and then ignored is how `rust-version` came to select a toolchain
+          # it did not select.
+          echo "build-jobs=${{ inputs.build-jobs }} all-features=${{ inputs.all-features }} — accepted, and NOT honoured, because the step below does not exist yet."
+          echo "::error::PLACEHOLDER: there is no honest Mycelium build step yet."
+          echo "Ordinary multi-statement Mycelium programs with host contact cannot yet compile and run end-to-end (DN-50 accept<->instantiate frontier; *-myc DELIVERY.md rows are Declared with no graduated nodule)."
+          echo "When the compiler can build these projects, replace this step with the real invocation and delete this message. Until then depth must stay at lint|check."
+          exit 1
+
+      # ---- PLACEHOLDER. Fails on purpose. Do not make this echo success. -----
+      - name: Test (PLACEHOLDER — no honest implementation exists)
+        if: inputs.depth == 'check+test' || inputs.depth == 'full'
+        run: |
+          set -eu
+          echo "::error::PLACEHOLDER: there is no honest Mycelium test step yet."
+          echo "A test gate requires programs that run three-way (L1-eval == L0-interp == AOT). That is exactly the gap DN-50 frames as open."
+          echo "When a differential harness witnesses these projects, replace this step with the real invocation and delete this message."
+          exit 1
