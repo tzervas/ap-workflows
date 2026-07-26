@@ -147,7 +147,7 @@ jobs:
           fi
           echo "depth=$DEPTH python-version=$PYVER extra-matrix=$PYVERS"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -354,7 +354,7 @@ jobs:
             *) echo "::error::python-versions cell '$v' is below the fleet floor of 3.11 (3.10 and older are EOL)"; exit 1 ;;
           esac
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5

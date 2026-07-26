@@ -76,7 +76,7 @@ jobs:
       repos: ${{ steps.pick.outputs.repos }}
       labels: ${{ steps.pick.outputs.labels }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Expand scope to a repo list
         id: pick

@@ -92,7 +92,7 @@ jobs:
           esac
           echo "depth=${{ inputs.depth }}"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Ensure shellcheck (pinned)
         run: |

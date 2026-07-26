@@ -161,7 +161,7 @@ jobs:
           esac
           echo "depth=${{ inputs.depth }}"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The `rust-version` input was previously accepted, documented, and exposed
       # as a control-panel dropdown — and then ignored: the toolchain was pinned
@@ -260,7 +260,7 @@ jobs:
             *) echo "::error::bench must be off|compile|run, got '${{ inputs.bench }}'"; exit 1 ;;
           esac
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -299,7 +299,7 @@ jobs:
     runs-on: ${{ fromJSON(inputs.gpu-runner-labels) }}
     timeout-minutes: ${{ inputs.gpu-timeout-minutes }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@master
         with:
