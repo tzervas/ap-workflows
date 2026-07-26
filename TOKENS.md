@@ -12,7 +12,7 @@ not from assumption.
 |---|---|---|---|--:|
 | `FLEET_PROPAGATE_TOKEN` | `mycelium-lang` **only** | all 46 train repos + `mycelium-lang` | **Contents: write** + **Pull requests: write** | **1** |
 | `FLEET_DISPATCH_TOKEN` | each component repo | **`mycelium-lang` only** | **Contents: write** | up to 46 |
-| `FLEET_ACTIONS_TOKEN` | `mycelium-workflows` **only** | the train repos you want to fan out to | **Actions: write** | **1** |
+| `FLEET_ACTIONS_TOKEN` | `ap-workflows` **only** | the train repos you want to fan out to | **Actions: write** | **1** |
 
 ## Why `FLEET_DISPATCH_TOKEN` is the narrowest of the three
 

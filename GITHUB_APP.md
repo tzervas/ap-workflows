@@ -22,7 +22,7 @@ fleet stall. An App token triggers them natively.
 ### 2. It removes the 46-copy secret problem — but not the way you'd guess
 
 An App still has a secret: its private key. The win is *where it lives*. Keep the
-key in `mycelium-lang` (and `mycelium-workflows` if you use the control panel),
+key in `mycelium-lang` (and `ap-workflows` if you use the control panel),
 mint a token per run, and **drop `fleet-notify.yml` entirely** — the umbrella's
 2-hourly schedule already catches every advance.
 
@@ -94,7 +94,7 @@ Finally **generate a private key** and record the **App ID**.
 
 ## Wire it up
 
-Two secrets, in `mycelium-lang` (and `mycelium-workflows` only if you use the
+Two secrets, in `mycelium-lang` (and `ap-workflows` only if you use the
 control panel):
 
 | Secret | Value |
@@ -107,7 +107,7 @@ matching the posture `release.yml` already states:
 
 ```yaml
       - id: app
-        uses: tzervas/mycelium-workflows/.github/actions/app-token@main
+        uses: tzervas/ap-workflows/.github/actions/app-token@main
         with:
           app-id: ${{ secrets.MYCELIUM_APP_ID }}
           private-key: ${{ secrets.MYCELIUM_APP_PRIVATE_KEY }}
@@ -133,7 +133,7 @@ as an opaque 401.
 | Was | Becomes |
 |---|---|
 | `FLEET_PROPAGATE_TOKEN` on `mycelium-lang` | App token (Contents + Pull requests: write) |
-| `FLEET_ACTIONS_TOKEN` on `mycelium-workflows` | same App (Actions: write) |
+| `FLEET_ACTIONS_TOKEN` on `ap-workflows` | same App (Actions: write) |
 | `FLEET_DISPATCH_TOKEN` in up to 46 repos | **not created** — the schedule covers it |
 
 ## What an App does not solve

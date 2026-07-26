@@ -1,4 +1,4 @@
-# mycelium-workflows
+# ap-workflows
 
 Centralized, parameterized reusable workflows for the **Mycelium Rust train**.
 
@@ -23,7 +23,7 @@ on:
   pull_request: { branches: [main, dev] }
 jobs:
   check:
-    uses: tzervas/mycelium-workflows/.github/workflows/reusable-rust-ci.yml@main
+    uses: tzervas/ap-workflows/.github/workflows/reusable-rust-ci.yml@main
     with:
       depth: check+test
 ```

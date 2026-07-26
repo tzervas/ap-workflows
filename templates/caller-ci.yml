@@ -1,7 +1,7 @@
 # Component-repo CI. Install as .github/workflows/ci.yml
 #
 # The whole gate is centralized: to change policy for all 46 repos, edit
-# reusable-rust-ci.yml in tzervas/mycelium-workflows — not 46 files.
+# reusable-rust-ci.yml in tzervas/ap-workflows — not 46 files.
 #
 # The job name stays `check` because that is the context protec-main and
 # protec-dev require across the train. Do not rename it.
@@ -34,7 +34,7 @@ concurrency:
 
 jobs:
   check:
-    uses: tzervas/mycelium-workflows/.github/workflows/reusable-rust-ci.yml@main
+    uses: tzervas/ap-workflows/.github/workflows/reusable-rust-ci.yml@main
     with:
       # Dispatch overrides win; push/PR uses the train defaults.
       depth: ${{ inputs.depth || 'check+test' }}

@@ -76,7 +76,7 @@ Install `templates/caller-ci.yml` as `.github/workflows/ci.yml`:
 ```yaml
 jobs:
   check:
-    uses: tzervas/mycelium-workflows/.github/workflows/reusable-rust-ci.yml@main
+    uses: tzervas/ap-workflows/.github/workflows/reusable-rust-ci.yml@main
     with:
       depth: check+test
 ```

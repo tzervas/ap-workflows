@@ -2,7 +2,7 @@
 # Migrate component repos to call the centralized reusable CI, one PR per repo.
 #
 # Dry-run by default. APPLY=1 to push and open PRs. Idempotent: skips any repo
-# whose ci.yml already calls mycelium-workflows.
+# whose ci.yml already calls ap-workflows.
 #
 #   bash scripts/rollout-callers.sh                          # show the plan
 #   SCOPE=stdlib bash scripts/rollout-callers.sh             # one group
@@ -30,7 +30,7 @@ for full in $repos; do
   repo="${full#*/}"
 
   if gh api "repos/$OWNER/$repo/contents/.github/workflows/ci.yml" --jq '.content' 2>/dev/null \
-      | base64 -d 2>/dev/null | grep -q "mycelium-workflows"; then
+      | base64 -d 2>/dev/null | grep -q "ap-workflows"; then
     echo "skip  $repo (already centralized)"
     skipped=$((skipped + 1))
     continue
@@ -56,11 +56,11 @@ for full in $repos; do
     continue
   fi
 
-  git -C "$tmp/$repo" -c user.name=mycelium-workflows -c user.email=noreply@github.com \
+  git -C "$tmp/$repo" -c user.name=ap-workflows -c user.email=noreply@github.com \
     commit -q -m "ci: call the centralized reusable Rust CI
 
 Replaces this repo's local copy of the train's ci.yml with a single call to
-tzervas/mycelium-workflows reusable-rust-ci.yml. 45 of 46 component repos
+tzervas/ap-workflows reusable-rust-ci.yml. 45 of 46 component repos
 carried byte-identical copies, so any policy change previously meant 46 PRs.
 
 The job name stays \`check\` because that is the required status-check context in
@@ -73,7 +73,7 @@ default gate (fmt + clippy -D warnings + test on ubuntu-latest)."
 
   gh pr create --repo "$OWNER/$repo" --base main --head "$BRANCH" \
     --title "ci: call the centralized reusable Rust CI" \
-    --body "Replaces this repo's local \`ci.yml\` with one call to [\`mycelium-workflows\`](https://github.com/$OWNER/mycelium-workflows) \`reusable-rust-ci.yml@main\`.
+    --body "Replaces this repo's local \`ci.yml\` with one call to [\`ap-workflows\`](https://github.com/$OWNER/ap-workflows) \`reusable-rust-ci.yml@main\`.
 
 45 of 46 component repos carried byte-identical \`ci.yml\` files, so a policy change meant 46 PRs. This makes it one commit in the central repo.
 
