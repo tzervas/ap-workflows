@@ -1,7 +1,7 @@
 # Fleet standard CI — install as .github/workflows/fleet-ci.yml
 #
 # This file is deliberately thin. All policy lives in
-# tzervas/mycelium-workflows/.github/workflows/reusable-fleet-ci.yml; the only
+# tzervas/ap-workflows/.github/workflows/reusable-fleet-ci.yml; the only
 # things that belong here are (a) which branches this repo builds on and
 # (b) this repo's own overrides.
 #
@@ -18,7 +18,7 @@
 # PIN DISCIPLINE: `@v0.1` is a MOVING tag. Central minor and patch fixes
 # reach this repo automatically. Moving to `@v0.2` is a deliberate, reviewed
 # change, because a major bump is by definition breaking. See
-# https://github.com/tzervas/mycelium-workflows#tag-discipline
+# https://github.com/tzervas/ap-workflows#tag-discipline
 name: fleet-ci
 
 on:
@@ -43,7 +43,7 @@ permissions:
 
 jobs:
   fleet-ci:
-    uses: tzervas/mycelium-workflows/.github/workflows/reusable-fleet-ci.yml@v0.1
+    uses: tzervas/ap-workflows/.github/workflows/reusable-fleet-ci.yml@v0.1
     with:
       tier: ${{ inputs.tier || 'auto' }}
       # Repo-specific overrides go here and nowhere else. If this repo needs

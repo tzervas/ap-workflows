@@ -131,14 +131,14 @@ jobs:
               ;;
           esac
 
-          git config user.name  "mycelium-workflows[bot]"
+          git config user.name  "ap-workflows[bot]"
           git config user.email "noreply@github.com"
           # The exact-version tag is immutable and created once; only the
           # MAJOR.MINOR tag moves.
           if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
             echo "v${VERSION} already tagged — leaving it alone"
           else
-            git tag -a "v${VERSION}" -m "mycelium-workflows v${VERSION}"
+            git tag -a "v${VERSION}" -m "ap-workflows v${VERSION}"
             git push origin "v${VERSION}"
           fi
           git tag -f -a "$MOVING" -m "moving tag -> v${VERSION} (${GITHUB_SHA})"

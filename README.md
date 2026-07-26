@@ -139,7 +139,7 @@ Everything downstream follows from that one fact:
 **Callers pin `@v0.1`** — a moving `MAJOR.MINOR` tag, not a bare major.
 
 ```yaml
-uses: tzervas/mycelium-workflows/.github/workflows/reusable-fleet-ci.yml@v0.1
+uses: tzervas/ap-workflows/.github/workflows/reusable-fleet-ci.yml@v0.1
 ```
 
 | change | what happens | who decides |

@@ -139,7 +139,7 @@ jobs:
           # the tag callers pin is vMAJOR.MINOR. A bare-major pin would resolve
           # to a tag that does not exist: the caller fails with "unable to find
           # reusable workflow", fleet-wide, with no other warning.
-          if grep -rnE 'mycelium-workflows/\.github/workflows/[a-z-]+\.yml@v[0-9]+($|[^.0-9])' \
+          if grep -rnE 'ap-workflows/\.github/workflows/[a-z-]+\.yml@v[0-9]+($|[^.0-9])' \
                templates .github/workflows scripts README.md USAGE.md; then
             echo "::error::a caller pins a bare major tag (@vN). While this repo is 0.x the moving tag is v0.MINOR."
             exit 1

@@ -40,7 +40,7 @@ concurrency:
 
 jobs:
   check:
-    uses: tzervas/mycelium-workflows/.github/workflows/reusable-shell-ci.yml@v0.1
+    uses: tzervas/ap-workflows/.github/workflows/reusable-shell-ci.yml@v0.1
     with:
       depth: >-
         ${{ inputs.depth

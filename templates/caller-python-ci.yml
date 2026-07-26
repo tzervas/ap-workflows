@@ -40,7 +40,7 @@ concurrency:
 
 jobs:
   check:
-    uses: tzervas/mycelium-workflows/.github/workflows/reusable-python-ci.yml@v0.1
+    uses: tzervas/ap-workflows/.github/workflows/reusable-python-ci.yml@v0.1
     with:
       python-version: '3.13'
       depth: >-

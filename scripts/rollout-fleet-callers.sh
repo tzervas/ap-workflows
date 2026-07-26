@@ -80,7 +80,7 @@ for repo in $repos; do
   already=0
   for f in fleet-ci.yml fleet-security.yml; do
     if api "repos/$OWNER/$repo/contents/.github/workflows/$f" --jq '.content' 2>/dev/null \
-        | base64 -d 2>/dev/null | grep -q "mycelium-workflows"; then
+        | base64 -d 2>/dev/null | grep -q "ap-workflows"; then
       already=$((already + 1))
     fi
   done
@@ -162,7 +162,7 @@ for repo in $repos; do
 
   cat > "$tmp/$repo/.github/workflows/fleet-ci.yml" <<EOF
 # Fleet standard CI — thin caller. Policy lives in
-# https://github.com/$OWNER/mycelium-workflows/blob/main/.github/workflows/reusable-fleet-ci.yml
+# https://github.com/$OWNER/ap-workflows/blob/main/.github/workflows/reusable-fleet-ci.yml
 #
 # Strictness is chosen by the branch you are TARGETING:
 #   dev tier  (-> ${dev_tier:-none}) check + test, one Python version, GPU/bench skipped
@@ -197,7 +197,7 @@ permissions:
 
 jobs:
   fleet-ci:
-    uses: $OWNER/mycelium-workflows/.github/workflows/reusable-fleet-ci.yml@$PIN
+    uses: $OWNER/ap-workflows/.github/workflows/reusable-fleet-ci.yml@$PIN
     with:
       tier: \${{ inputs.tier || 'auto' }}
       main-branches: '$main_branches'
@@ -206,7 +206,7 @@ EOF
 
   cat > "$tmp/$repo/.github/workflows/fleet-security.yml" <<EOF
 # Fleet security scan — thin caller. Policy lives in
-# https://github.com/$OWNER/mycelium-workflows/blob/main/.github/workflows/reusable-fleet-security.yml
+# https://github.com/$OWNER/ap-workflows/blob/main/.github/workflows/reusable-fleet-security.yml
 #
 # dev tier scans the working tree; main tier and the weekly schedule scan the
 # full git history for secrets.
@@ -235,7 +235,7 @@ permissions:
 
 jobs:
   fleet-security:
-    uses: $OWNER/mycelium-workflows/.github/workflows/reusable-fleet-security.yml@$PIN
+    uses: $OWNER/ap-workflows/.github/workflows/reusable-fleet-security.yml@$PIN
     with:
       tier: auto
       main-branches: '$main_branches'
@@ -258,12 +258,12 @@ EOF
     skipped=$((skipped + 1)); rm -rf "$tmp"; continue
   fi
 
-  git -C "$tmp/$repo" -c user.name=mycelium-workflows -c user.email=noreply@github.com \
+  git -C "$tmp/$repo" -c user.name=ap-workflows -c user.email=noreply@github.com \
     commit -q -F - <<EOF
 ci: call centralized fleet workflows with branch-tier strictness
 
 Replaces this repo's local copies of fleet-ci.yml and fleet-security.yml with
-thin callers into tzervas/mycelium-workflows@$PIN.
+thin callers into tzervas/ap-workflows@$PIN.
 
 Measured across 239 non-archived repos: 225 carried fleet-ci.yml in 15 distinct
 byte-variants and fleet-security.yml in 6. The variants are drift, not policy.
@@ -305,7 +305,7 @@ EOF
 
   url="$(gh pr create --repo "$OWNER/$repo" --base "$default_branch" --head "$BRANCH" $draft_flag \
     --title "ci: centralize fleet workflows with branch-tier strictness" \
-    --body "${staged_note}Replaces this repo's local \`fleet-ci.yml\` and \`fleet-security.yml\` with thin callers into [\`mycelium-workflows\`](https://github.com/$OWNER/mycelium-workflows)\`@$PIN\`.
+    --body "${staged_note}Replaces this repo's local \`fleet-ci.yml\` and \`fleet-security.yml\` with thin callers into [\`ap-workflows\`](https://github.com/$OWNER/ap-workflows)\`@$PIN\`.
 
 ## Why
 

@@ -219,7 +219,7 @@ the caller that `needs:` the reusable call and fails when it failed:
 ```yaml
 jobs:
   ci:
-    uses: tzervas/mycelium-workflows/.github/workflows/reusable-rust-ci.yml@v0.1
+    uses: tzervas/ap-workflows/.github/workflows/reusable-rust-ci.yml@v0.1
   build:                      # the name the ruleset requires
     name: build
     needs: [ci]

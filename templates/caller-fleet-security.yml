@@ -1,7 +1,7 @@
 # Fleet security scan — install as .github/workflows/fleet-security.yml
 #
 # Thin caller. Policy lives in
-# tzervas/mycelium-workflows/.github/workflows/reusable-fleet-security.yml.
+# tzervas/ap-workflows/.github/workflows/reusable-fleet-security.yml.
 #
 # Tier: dev scans the working tree; main tier and the weekly schedule scan the
 # full git history for secrets.
@@ -15,7 +15,7 @@
 # superseded.
 #
 # PIN DISCIPLINE: `@v0.1` is a MOVING tag — see
-# https://github.com/tzervas/mycelium-workflows#tag-discipline
+# https://github.com/tzervas/ap-workflows#tag-discipline
 name: fleet-security
 
 on:
@@ -36,7 +36,7 @@ permissions:
 
 jobs:
   fleet-security:
-    uses: tzervas/mycelium-workflows/.github/workflows/reusable-fleet-security.yml@v0.1
+    uses: tzervas/ap-workflows/.github/workflows/reusable-fleet-security.yml@v0.1
     with:
       tier: auto
       # Set trivy-required: true once trivy is on the runner image — that is what
