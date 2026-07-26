@@ -12,10 +12,10 @@ non-archived** repositories (the 7 archived repos are out of scope):
 
 | primary language | repos | reusable workflow |
 |---|--:|---|
-| Rust | 93 | `reusable-rust-ci.yml` |
-| Shell | 49 | `reusable-shell-ci.yml` |
+| Rust | 93 | `reusable-ci-rust.yml` |
+| Shell | 49 | `reusable-ci-shell.yml` |
 | *(none detected)* | 48 | — no code gate to centralize |
-| Python | 47 | `reusable-python-ci.yml` |
+| Python | 47 | `reusable-ci-python.yml` |
 | Go | 4 | not covered — see USAGE.md |
 | TypeScript | 2 | not covered — see USAGE.md |
 | Makefile | 2 | — |
@@ -24,7 +24,7 @@ non-archived** repositories (the 7 archived repos are out of scope):
 | Batchfile | 1 | — |
 
 47 of those non-archived repos are the `*-myc` native-language train.
-`reusable-mycelium-ci.yml` is **prepped and deliberately not adopted** — see
+`reusable-ci-mycelium.yml` is **prepped and deliberately not adopted** — see
 below and the header of the file itself.
 
 See **[USAGE.md](USAGE.md)** for the full interface and **[TOKENS.md](TOKENS.md)** for the
@@ -44,13 +44,13 @@ on:
   pull_request: { branches: [main, dev] }
 jobs:
   check:
-    uses: tzervas/ap-workflows/.github/workflows/reusable-rust-ci.yml@v0.1
+    uses: tzervas/ap-workflows/.github/workflows/reusable-ci-rust.yml@v0.1
     with:
       depth: check+test
 ```
 
-Swap `reusable-rust-ci.yml` for `reusable-python-ci.yml` or
-`reusable-shell-ci.yml` and the caller is otherwise identical — the input names
+Swap `reusable-ci-rust.yml` for `reusable-ci-python.yml` or
+`reusable-ci-shell.yml` and the caller is otherwise identical — the input names
 and semantics are the same across languages on purpose.
 
 ## Version pin: `@v0.1` is the moving tag
@@ -83,7 +83,7 @@ validated strings that refuse loudly on a bad value. Details in USAGE.md.
 ## Branch-tier strictness
 
 Strictness is chosen by **the branch a change is targeting**, not by anything a
-caller sets. `reusable-fleet-ci.yml` resolves the tier once, centrally, in the
+caller sets. `reusable-ci-autodetect.yml` resolves the tier once, centrally, in the
 `detect stack` job — from `github.base_ref` on a pull request, `github.ref_name`
 otherwise — against the `main-branches` input (default `main,master`). A caller
 cannot get the policy wrong, because a caller does not compute it.
@@ -139,7 +139,7 @@ Everything downstream follows from that one fact:
 **Callers pin `@v0.1`** — a moving `MAJOR.MINOR` tag, not a bare major.
 
 ```yaml
-uses: tzervas/ap-workflows/.github/workflows/reusable-fleet-ci.yml@v0.1
+uses: tzervas/ap-workflows/.github/workflows/reusable-ci-autodetect.yml@v0.1
 ```
 
 | change | what happens | who decides |
@@ -158,7 +158,7 @@ pin anywhere in the tree.
 `release-tag.yml` on the first push to `main` after this lands and after
 `self-test` is green for that commit. Until then a caller pinned at `@v0.1` fails
 with "unable to find reusable workflow" — which is why
-`scripts/rollout-fleet-callers.sh` opens its PRs as drafts by default. That red
+`scripts/rollout-callers.sh` opens its PRs as drafts by default. That red
 tick is correct: it is a caller pointing at policy that has not been published
 yet, and it turns green by itself once the tag exists.
 
@@ -183,9 +183,9 @@ Required status-check contexts in the `protec-main` / `protec-dev` rulesets:
 
 | workflow | contexts |
 |---|---|
-| `reusable-fleet-ci.yml` | `detect stack`, `cargo check/test`, `python lint/test`, `no stack detected` |
-| `reusable-fleet-security.yml` | `gitleaks`, `trivy filesystem (vuln+secret+license)` |
-| `reusable-rust-ci.yml` | `check` |
+| `reusable-ci-autodetect.yml` | `detect stack`, `cargo check/test`, `python lint/test`, `no stack detected` |
+| `reusable-scan-secrets-vuln.yml` | `gitleaks`, `trivy filesystem (vuln+secret+license)` |
+| `reusable-ci-rust.yml` | `check` |
 
 Renaming one silently un-gates every repo requiring it — the context never
 reports, so the PR either blocks forever or, if the requirement is then dropped,
@@ -226,7 +226,7 @@ anyone intended it. `mycelium-core`'s `protec-main` currently requires `check`,
 those ever reports again, and PRs wait forever on a context that no longer
 exists.
 
-This applies to `templates/caller-ci.yml` too: a caller job named `check`
+This applies to `templates/caller-ci-rust.yml` too: a caller job named `check`
 invoking a reusable job named `check` reports **`check / check`**, not `check`.
 
 `scripts/sync-required-contexts.sh` is the other half of the migration. Run it
@@ -283,7 +283,7 @@ material: **124 repos still ran the pre-hardening scan that pulled
 `zricethezav/gitleaks:latest` unpinned and unauthenticated**, while 97 ran the
 pinned-and-checksummed version.
 
-`scripts/rollout-fleet-callers.sh` replaces both files with thin callers, one PR
+`scripts/rollout-callers.sh` replaces both files with thin callers, one PR
 per repo, dry-run by default. It preserves each repo's real branch list — a repo
 whose PRs target `devel` gets `devel` in the trigger list, because that single
 omission is why one repo had nine open PRs with literally zero checks — and it
@@ -307,13 +307,13 @@ to sum to the live train exactly:
 
 | workflow | scope | state |
 |---|---|---|
-| `reusable-fleet-ci.yml` | fleet-wide (~225 repos) | source of truth; installed by `scripts/rollout-fleet-callers.sh` |
-| `reusable-fleet-security.yml` | fleet-wide (~225 repos) | source of truth; installed by `scripts/rollout-fleet-callers.sh` |
-| `reusable-rust-ci.yml` | Mycelium Rust train | in use; narrower Rust-only gate (`check`); rollout underway |
+| `reusable-ci-autodetect.yml` | fleet-wide (~225 repos) | source of truth; installed by `scripts/rollout-callers.sh` |
+| `reusable-scan-secrets-vuln.yml` | fleet-wide (~225 repos) | source of truth; installed by `scripts/rollout-callers.sh` |
+| `reusable-ci-rust.yml` | Mycelium Rust train | in use; narrower Rust-only gate (`check`); rollout underway |
 | `reusable-rust-security.yml` | Mycelium Rust train | in use |
-| `reusable-python-ci.yml` | Python repos | ready; rollout underway |
-| `reusable-shell-ci.yml` | Shell repos | ready; not yet rolled out |
-| `reusable-mycelium-ci.yml` | `*-myc` train | **prepped, NOT adopted — see below** |
+| `reusable-ci-python.yml` | Python repos | ready; rollout underway |
+| `reusable-ci-shell.yml` | Shell repos | ready; not yet rolled out |
+| `reusable-ci-mycelium.yml` | `*-myc` train | **prepped, NOT adopted — see below** |
 | `control-panel.yml` | this repo | in use |
 | `self-test.yml` / `release-tag.yml` | this repo | this repo's own gate and tag mover |
 
@@ -326,7 +326,7 @@ Component repos migrate one PR at a time; their existing in-repo workflows keep
 running until a PR replaces the overlapping portion, so nothing regresses while
 the migration lands.
 
-### `reusable-mycelium-ci.yml` is not a working gate
+### `reusable-ci-mycelium.yml` is not a working gate
 
 It is committed so adoption later is a one-line caller change, and it refuses to
 run unless the caller passes `acknowledge-not-adopted: true`.

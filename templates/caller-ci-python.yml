@@ -1,6 +1,6 @@
 # Component-repo Python CI. Install as .github/workflows/ci.yml
 #
-# Same shape as templates/caller-ci.yml (Rust) — deliberately, so a caller reads
+# Same shape as templates/caller-ci-rust.yml (Rust) — deliberately, so a caller reads
 # the same regardless of language. See that file for the @v0.1 moving-tag and
 # tiering rationale.
 #
@@ -40,7 +40,7 @@ concurrency:
 
 jobs:
   check:
-    uses: tzervas/ap-workflows/.github/workflows/reusable-python-ci.yml@v0.1
+    uses: tzervas/ap-workflows/.github/workflows/reusable-ci-python.yml@v0.1
     with:
       python-version: '3.13'
       depth: >-

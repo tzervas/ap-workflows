@@ -1,7 +1,7 @@
 # Component-repo Rust CI. Install as .github/workflows/ci.yml
 #
 # The whole gate is centralized: to change policy for the Rust repos, edit
-# reusable-rust-ci.yml in tzervas/ap-workflows — not one file per repo.
+# reusable-ci-rust.yml in tzervas/ap-workflows — not one file per repo.
 #
 # CAUTION — the reported context is NOT `check`.
 #
@@ -70,7 +70,7 @@ concurrency:
 
 jobs:
   check:
-    uses: tzervas/ap-workflows/.github/workflows/reusable-rust-ci.yml@v0.1
+    uses: tzervas/ap-workflows/.github/workflows/reusable-ci-rust.yml@v0.1
     with:
       # Dispatch overrides win; otherwise the tier decides.
       depth: >-

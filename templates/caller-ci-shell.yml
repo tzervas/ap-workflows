@@ -1,6 +1,6 @@
 # Component-repo Shell CI. Install as .github/workflows/ci.yml
 #
-# Same shape as templates/caller-ci.yml (Rust). See that file for the @v0.1
+# Same shape as templates/caller-ci-rust.yml (Rust). See that file for the @v0.1
 # moving-tag and tiering rationale.
 #
 #   tier    depth        runner            notes
@@ -40,7 +40,7 @@ concurrency:
 
 jobs:
   check:
-    uses: tzervas/ap-workflows/.github/workflows/reusable-shell-ci.yml@v0.1
+    uses: tzervas/ap-workflows/.github/workflows/reusable-ci-shell.yml@v0.1
     with:
       depth: >-
         ${{ inputs.depth

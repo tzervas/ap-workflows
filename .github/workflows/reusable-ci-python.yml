@@ -2,7 +2,7 @@
 #
 # 47 non-archived repos report Python as their primary language (measured
 # 2026-07-25 over 249 non-archived repos; 7 archived repos are out of scope).
-# This is the Python sibling of reusable-rust-ci.yml and deliberately mirrors its
+# This is the Python sibling of reusable-ci-rust.yml and deliberately mirrors its
 # input names and semantics, so a caller looks the same regardless of language:
 #
 #   rust                     python                  meaning
@@ -113,7 +113,7 @@ env:
 
 jobs:
   check:
-    # Single job name on purpose, matching reusable-rust-ci.yml: `check` is the
+    # Single job name on purpose, matching reusable-ci-rust.yml: `check` is the
     # context a caller wires into its branch protection. Renaming it silently
     # un-gates every repo that requires it.
     name: check
@@ -177,7 +177,7 @@ jobs:
           # A repo with no Python packaging metadata is a configuration error for
           # this workflow, not something to paper over with a green skip.
           if [ "$proj" != "true" ] && [ ! -f requirements.txt ] && [ ! -f setup.py ]; then
-            echo "::error::no pyproject.toml, requirements.txt or setup.py — this repo is not a Python project; do not call reusable-python-ci.yml for it"
+            echo "::error::no pyproject.toml, requirements.txt or setup.py — this repo is not a Python project; do not call reusable-ci-python.yml for it"
             exit 1
           fi
 

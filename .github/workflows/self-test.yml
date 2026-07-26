@@ -65,20 +65,20 @@ jobs:
           # protec-dev rulesets. Changing one here silently un-gates every repo
           # that requires it.
           CONTRACT = {
-              ".github/workflows/reusable-fleet-ci.yml": {
+              ".github/workflows/reusable-ci-autodetect.yml": {
                   "detect stack", "cargo check/test", "python lint/test",
                   "no stack detected",
               },
-              ".github/workflows/reusable-fleet-security.yml": {
+              ".github/workflows/reusable-scan-secrets-vuln.yml": {
                   "gitleaks", "trivy filesystem (vuln+secret+license)",
               },
-              ".github/workflows/reusable-rust-ci.yml": {"check"},
+              ".github/workflows/reusable-ci-rust.yml": {"check"},
               ".github/workflows/reusable-rust-security.yml": {
                   "gitleaks", "trivy filesystem (vuln+secret+license)",
               },
-              ".github/workflows/reusable-python-ci.yml": {"check"},
-              ".github/workflows/reusable-shell-ci.yml": {"check"},
-              # reusable-mycelium-ci.yml is deliberately absent: it is prep-only,
+              ".github/workflows/reusable-ci-python.yml": {"check"},
+              ".github/workflows/reusable-ci-shell.yml": {"check"},
+              # reusable-ci-mycelium.yml is deliberately absent: it is prep-only,
               # refuses to run without `acknowledge-not-adopted: true`, and must
               # never become a required context on any repo.
           }
@@ -145,8 +145,8 @@ jobs:
             exit 1
           fi
           expected="v$(cut -d. -f1,2 < VERSION)"
-          if ! grep -q "@${expected}\b" templates/caller-ci.yml; then
-            echo "::error::templates/caller-ci.yml does not pin @${expected} (derived from VERSION)"
+          if ! grep -q "@${expected}\b" templates/caller-ci-rust.yml; then
+            echo "::error::templates/caller-ci-rust.yml does not pin @${expected} (derived from VERSION)"
             exit 1
           fi
           echo "ok   moving pin is ${expected}"

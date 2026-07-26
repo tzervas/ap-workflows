@@ -6,7 +6,7 @@
 # a `.github/workflows/fleet-ci.yml`, in 15 distinct byte-variants. The two
 # dominant variants cover 212 repos (120 + 92) and differ only in the Rust
 # detection heuristic — the other 13 are one-off local drift. That is the same
-# copy-paste problem `reusable-rust-ci.yml` solved for the Mycelium train, at
+# copy-paste problem `reusable-ci-rust.yml` solved for the Mycelium train, at
 # fleet scale. This workflow is the single definition; repos install a thin
 # caller that passes only its own overrides.
 #
@@ -43,7 +43,7 @@
 #   main tier -> everything completes: --all-features, clippy -D warnings, doc
 #                warnings-as-errors, the full Python version matrix, and GPU jobs
 #                and benchmarks that RUN rather than skip.
-name: Reusable Fleet CI
+name: Reusable CI (autodetect Rust/Python)
 
 on:
   workflow_call:

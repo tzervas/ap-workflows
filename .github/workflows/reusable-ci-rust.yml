@@ -60,7 +60,7 @@ on:
       setup-env:
         description: >-
           Newline-separated KEY=VALUE pairs exported for `setup-command` and every
-          later step in the job. Mirrors `test-env` in reusable-python-ci.yml.
+          later step in the job. Mirrors `test-env` in reusable-ci-python.yml.
           Pass only values you control — never a PR title or body, which are
           attacker-controllable and would be a script-injection channel.
         required: false

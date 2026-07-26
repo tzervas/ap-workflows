@@ -1,7 +1,7 @@
 # Fleet standard CI — install as .github/workflows/fleet-ci.yml
 #
 # This file is deliberately thin. All policy lives in
-# tzervas/ap-workflows/.github/workflows/reusable-fleet-ci.yml; the only
+# tzervas/ap-workflows/.github/workflows/reusable-ci-autodetect.yml; the only
 # things that belong here are (a) which branches this repo builds on and
 # (b) this repo's own overrides.
 #
@@ -43,7 +43,7 @@ permissions:
 
 jobs:
   fleet-ci:
-    uses: tzervas/ap-workflows/.github/workflows/reusable-fleet-ci.yml@v0.1
+    uses: tzervas/ap-workflows/.github/workflows/reusable-ci-autodetect.yml@v0.1
     with:
       tier: ${{ inputs.tier || 'auto' }}
       # Repo-specific overrides go here and nowhere else. If this repo needs

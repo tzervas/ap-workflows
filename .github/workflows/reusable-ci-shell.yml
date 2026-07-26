@@ -4,7 +4,7 @@
 # 2026-07-25 over 249 non-archived repos; 7 archived repos are out of scope), and
 # far more carry scripts under scripts/ without Shell being primary.
 #
-# Sibling of reusable-rust-ci.yml; the input names and semantics are deliberately
+# Sibling of reusable-ci-rust.yml; the input names and semantics are deliberately
 # the same so a caller looks identical regardless of language:
 #
 #   rust                     shell                   meaning
@@ -77,7 +77,7 @@ on:
 
 jobs:
   check:
-    # Same job name as reusable-rust-ci.yml: `check` is the context callers wire
+    # Same job name as reusable-ci-rust.yml: `check` is the context callers wire
     # into branch protection. Renaming it silently un-gates every caller.
     name: check
     runs-on: ${{ fromJSON(inputs.runner-labels) }}
@@ -155,7 +155,7 @@ jobs:
           [ "$n" -gt 0 ] && sed -n '1,50p' "$list"
 
           if [ "$n" -eq 0 ]; then
-            echo "::error::no shell scripts found under '$roots' — this repo has no shell surface to gate; do not call reusable-shell-ci.yml for it (a green shell gate over zero files proves nothing)"
+            echo "::error::no shell scripts found under '$roots' — this repo has no shell surface to gate; do not call reusable-ci-shell.yml for it (a green shell gate over zero files proves nothing)"
             exit 1
           fi
 

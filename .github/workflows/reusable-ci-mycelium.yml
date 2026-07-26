@@ -27,7 +27,7 @@
 #     Do not "temporarily" turn them into `echo ok` — that is precisely the
 #     fabricated-green this fleet's never-silent rule (G2) exists to prevent.
 #
-# The input shape mirrors reusable-rust-ci.yml exactly, so when the language is
+# The input shape mirrors reusable-ci-rust.yml exactly, so when the language is
 # ready the caller is identical in shape to every other language in the fleet:
 #
 #   rust                     mycelium                meaning
@@ -106,10 +106,10 @@ jobs:
         run: |
           set -eu
           if [ "${{ inputs.acknowledge-not-adopted }}" != "true" ]; then
-            echo "::error::reusable-mycelium-ci.yml is PREPPED, NOT ADOPTED. Multi-statement Mycelium programs with host contact cannot yet compile and run (DN-50 accept<->instantiate frontier), so depth>=check+test has no honest implementation. Pass acknowledge-not-adopted: true only if you understand that this workflow gates the checker pass and nothing else."
+            echo "::error::reusable-ci-mycelium.yml is PREPPED, NOT ADOPTED. Multi-statement Mycelium programs with host contact cannot yet compile and run (DN-50 accept<->instantiate frontier), so depth>=check+test has no honest implementation. Pass acknowledge-not-adopted: true only if you understand that this workflow gates the checker pass and nothing else."
             exit 1
           fi
-          echo "::warning::reusable-mycelium-ci.yml is a PARTIAL gate: myc-check only. It does NOT build and does NOT test."
+          echo "::warning::reusable-ci-mycelium.yml is a PARTIAL gate: myc-check only. It does NOT build and does NOT test."
 
       - name: Validate depth (never-silent)
         run: |

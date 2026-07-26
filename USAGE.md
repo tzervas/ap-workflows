@@ -8,17 +8,17 @@ opening a PR per repo.
 
 | File | Kind | Purpose |
 |---|---|---|
-| `.github/workflows/reusable-rust-ci.yml` | `workflow_call` | fmt / clippy / check / test / doc / release build / bench / GPU |
-| `.github/workflows/reusable-python-ci.yml` | `workflow_call` | ruff / ruff format / type check / pytest / coverage / build |
-| `.github/workflows/reusable-shell-ci.yml` | `workflow_call` | shellcheck / parse / bats / shfmt |
-| `.github/workflows/reusable-mycelium-ci.yml` | `workflow_call` | **prepped, NOT adopted** — myc-check real, build/test are failing placeholders |
+| `.github/workflows/reusable-ci-rust.yml` | `workflow_call` | fmt / clippy / check / test / doc / release build / bench / GPU |
+| `.github/workflows/reusable-ci-python.yml` | `workflow_call` | ruff / ruff format / type check / pytest / coverage / build |
+| `.github/workflows/reusable-ci-shell.yml` | `workflow_call` | shellcheck / parse / bats / shfmt |
+| `.github/workflows/reusable-ci-mycelium.yml` | `workflow_call` | **prepped, NOT adopted** — myc-check real, build/test are failing placeholders |
 | `.github/workflows/reusable-rust-security.yml` | `workflow_call` | gitleaks + trivy filesystem |
 | `.github/workflows/control-panel.yml` | `workflow_dispatch` | the human-facing selector surface |
 | `.github/dependabot.yml` | config | keeps the pinned actions here fresh for every caller at once |
-| `templates/caller-ci.yml` | template | 1-call Rust wrapper a component repo installs |
-| `templates/caller-python-ci.yml` | template | 1-call Python wrapper |
-| `templates/caller-shell-ci.yml` | template | 1-call Shell wrapper |
-| `templates/caller-security.yml` | template | scheduled security caller (no `cancel-in-progress` — see below) |
+| `templates/caller-ci-rust.yml` | template | 1-call Rust wrapper a component repo installs |
+| `templates/caller-ci-python.yml` | template | 1-call Python wrapper |
+| `templates/caller-ci-shell.yml` | template | 1-call Shell wrapper |
+| `templates/caller-rust-security.yml` | template | scheduled security caller (no `cancel-in-progress` — see below) |
 | `scripts/scope.py` | helper | single definition of `compiler-core` / `stdlib` / `tooling` / `all` |
 | `scripts/rollout-callers.sh` | helper | install callers across the train, one PR per repo |
 
@@ -51,7 +51,7 @@ Every one of them names its required job **`check`**, and every one **validates
 
 ### Python version floor
 
-`reusable-python-ci.yml` refuses any interpreter at or below **3.10** — the
+`reusable-ci-python.yml` refuses any interpreter at or below **3.10** — the
 single `python-version` and every cell of the optional `python-versions` matrix.
 Supported: 3.11+; the default and the preference is **3.13**. An EOL matrix cell
 is a green check that proves nothing about a supported runtime, so it is rejected
@@ -66,7 +66,7 @@ requested; matrix cells report as `check (py3.12)` and are advisory breadth.
 That is 6 repos out of 249 — the centralization payoff is what justifies the
 maintenance surface, and at 6 repos it does not. Their existing in-repo
 workflows keep running untouched. Adding them later is mechanical: copy the shape
-of `reusable-shell-ci.yml`, which is the simplest sibling.
+of `reusable-ci-shell.yml`, which is the simplest sibling.
 
 `Makefile` (2), `Dockerfile` (2), `HCL` (1) and `Batchfile` (1) repos likewise
 keep whatever gate they have.
@@ -92,7 +92,7 @@ reads as a passing GPU suite.
 
 ## Scheduled security scans do not cancel in progress
 
-`templates/caller-security.yml` sets a `concurrency.group` and deliberately omits
+`templates/caller-rust-security.yml` sets a `concurrency.group` and deliberately omits
 `cancel-in-progress`. Cancelling an in-flight scheduled scan kills the run that
 was going to find something and leaves a *cancelled* security status — neither
 pass nor fail. Cancellation is right for CI on a fast-moving branch and wrong for
@@ -126,7 +126,7 @@ string/number/boolean/environment. That is why:
 
 - the **dropdowns live in `control-panel.yml`** (and in each caller's own
   `workflow_dispatch`), and
-- the **reusable workflows take validated strings**. `reusable-rust-ci.yml`
+- the **reusable workflows take validated strings**. `reusable-ci-rust.yml`
   checks `depth` against `lint|check|check+test|full` and **refuses loudly** on a
   bad value instead of silently falling back to a default.
 
@@ -163,12 +163,12 @@ Token scoping is not interchangeable across the three fleet tokens — see
 
 ## Adding a repo to the train
 
-Install `templates/caller-ci.yml` as `.github/workflows/ci.yml`:
+Install `templates/caller-ci-rust.yml` as `.github/workflows/ci.yml`:
 
 ```yaml
 jobs:
   check:
-    uses: tzervas/ap-workflows/.github/workflows/reusable-rust-ci.yml@v0.1
+    uses: tzervas/ap-workflows/.github/workflows/reusable-ci-rust.yml@v0.1
     with:
       depth: check+test
 ```
@@ -219,7 +219,7 @@ the caller that `needs:` the reusable call and fails when it failed:
 ```yaml
 jobs:
   ci:
-    uses: tzervas/ap-workflows/.github/workflows/reusable-rust-ci.yml@v0.1
+    uses: tzervas/ap-workflows/.github/workflows/reusable-ci-rust.yml@v0.1
   build:                      # the name the ruleset requires
     name: build
     needs: [ci]
@@ -248,7 +248,7 @@ gate is not a refactor, it is a regression.
 `protec-main` and `protec-dev` require status-check **contexts** by name across
 all 46 repos:
 
-- `check` — the job in `reusable-rust-ci.yml`
+- `check` — the job in `reusable-ci-rust.yml`
 - `gitleaks` and `trivy filesystem (vuln+secret+license)` — in
   `reusable-rust-security.yml`
 
@@ -284,7 +284,7 @@ you are overriding that deliberately.
 
 ## Fixed: `rust-version` was accepted and ignored
 
-`reusable-rust-ci.yml` declared a `rust-version` input, documented it, and
+`reusable-ci-rust.yml` declared a `rust-version` input, documented it, and
 `control-panel.yml` surfaced it as a dropdown (`1.96.1` / `stable` / `beta` /
 `nightly`) and passed it through — but the toolchain step pinned the *action ref*
 (`dtolnay/rust-toolchain@1.96.1`), which installs 1.96.1 regardless of any input.
