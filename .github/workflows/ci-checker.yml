@@ -1,14 +1,17 @@
-# Self-test for the development-standards gate.
+# CI for the policy-contract checker script itself.
 #
-# This repo's `reusable-standards.yml` is what stands between a bad merge and every repo that
-# adopts it, so the checker behind it gets tested before the tag moves. `standards_selftest.py`
-# asserts BOTH directions for every rule: the dirty fixture produces the finding, and the clean
-# fixture produces nothing. A rule that silently stops firing is worse than no rule — it is a
-# gate that is off while looking on.
+# NOT this repo's self-test: it does not gate every PR against this repo's own contract (this
+# repo has no `dev` branch and ships workflow definitions, not a product with source of its
+# own). It tests one thing — that `scripts/standards_check.py`, the checker `reusable-
+# policy-contract.yml` runs, still behaves — and only runs when that checker, its fixtures, or
+# the workflow/template that call it change. `standards_selftest.py` asserts BOTH directions for
+# every rule: the dirty fixture produces the finding, and the clean fixture produces nothing. A
+# rule that silently stops firing is worse than no rule — it is a gate that is off while
+# looking on.
 #
 # It also re-checks that every workflow and template in this repo parses, because the checker's
 # own rule 6 exists for a bug that broke 15 of 22 repos here.
-name: standards-selftest
+name: ci-checker
 
 on:
   pull_request:
@@ -16,23 +19,23 @@ on:
     paths:
       - 'scripts/standards_check.py'
       - 'scripts/standards_selftest.py'
-      - '.github/workflows/reusable-standards.yml'
-      - '.github/workflows/standards-selftest.yml'
-      - 'templates/caller-standards.yml'
+      - '.github/workflows/reusable-policy-contract.yml'
+      - '.github/workflows/ci-checker.yml'
+      - 'templates/caller-policy-contract.yml'
   push:
     branches: [main, dev]
   workflow_dispatch:
 
 concurrency:
-  group: standards-selftest-${{ github.ref }}
+  group: ci-checker-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 permissions:
   contents: read
 
 jobs:
-  selftest:
-    name: standards selftest
+  checker:
+    name: policy-contract checker tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

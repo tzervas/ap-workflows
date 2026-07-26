@@ -1,6 +1,6 @@
 # The development-standards gate
 
-`reusable-standards.yml` is the executable form of
+`reusable-policy-contract.yml` is the executable form of
 [`BRANCH-AND-RELEASE-CONTRACT.md`](https://github.com/tzervas/gha-runner-ctl). The contract is
 written down and still gets violated, because a written rule depends on everyone remembering it
 at the moment it matters. **A rule nobody can violate beats a rule everyone knows.** This is the
@@ -13,8 +13,8 @@ incrementally instead of all-or-nothing.
 
 ## Quick start
 
-Install `.github/workflows/standards.yml` in the target repo — copy
-[`templates/caller-standards.yml`](../templates/caller-standards.yml):
+Install `.github/workflows/policy-contract.yml` in the target repo — copy
+[`templates/caller-policy-contract.yml`](../templates/caller-policy-contract.yml):
 
 ```yaml
 name: standards
@@ -36,7 +36,7 @@ permissions:
 
 jobs:
   standards:
-    uses: tzervas/mycelium-workflows/.github/workflows/reusable-standards.yml@main
+    uses: tzervas/mycelium-workflows/.github/workflows/reusable-policy-contract.yml@main
 ```
 
 That reports one status context: **`standards / standards`**. Read the next section before you
@@ -468,9 +468,9 @@ State these rather than let the gate imply more coverage than it has.
   lines and resolves the command a `||` binds to, which covers the real cases measured here, but
   a sufficiently baroque one-liner can slip past.
 * **`actionlint` 1.7.7 does not know `github.job_workflow_sha`** and reports
-  `property "job_workflow_sha" is not defined` against `reusable-standards.yml`. The property is
-  real and documented; the checker uses it so the script can never drift from the workflow that
-  calls it. Lint this repo with:
+  `property "job_workflow_sha" is not defined` against `reusable-policy-contract.yml`. The
+  property is real and documented; the checker uses it so the script can never drift from the
+  workflow that calls it. Lint this repo with:
 
   ```bash
   actionlint -ignore 'property "job_workflow_sha" is not defined'
@@ -497,7 +497,9 @@ What was actually run, and what was not, stated plainly rather than implied.
   / 5,865 insertions behind `main`**, and `gha-runner-ctl`'s merge base measured at **`ace4fe32`**
   — the same numbers the contract records.
 
-**Verified in GitHub Actions.** `standards-selftest.yml` ran on `ubuntu-latest`:
+**Verified in GitHub Actions.** `standards-selftest.yml` (renamed `ci-checker.yml` since, to
+avoid colliding with the fleet's one-per-repo `self-test.yml` convention — this workflow tests
+the checker script, not this repo's own PRs) ran on `ubuntu-latest`:
 
 | run | result |
 |---|---|
@@ -526,10 +528,11 @@ job status in both directions.
 
 **Not verified:**
 
-* The **reusable** workflow (`reusable-standards.yml`) has never executed. Job-name prefixing
-  into `standards / standards`, the `github.job_workflow_sha` checkout and the PyYAML install
-  fallback chain are reasoned from documentation, not observed. Only the direct-invocation path
-  in `standards-selftest.yml` has run.
+* The **reusable** workflow (`reusable-policy-contract.yml`, named `reusable-standards.yml` at
+  the time of the run below) has never executed. Job-name prefixing into `standards / standards`,
+  the `github.job_workflow_sha` checkout and the PyYAML install fallback chain are reasoned from
+  documentation, not observed. Only the direct-invocation path in `ci-checker.yml` (named
+  `standards-selftest.yml` at the time) has run.
 * The fleet's only registered runner was **offline**, so no self-hosted execution path was
   exercised.
 * The repo-settings half of rule 1 has never run against a token that can see the `allow_*`
