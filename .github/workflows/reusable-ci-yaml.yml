@@ -1,0 +1,116 @@
+# Reusable YAML parse-validation gate for the fleet.
+#
+# NAMING: THIS FILE REPLACES reusable-standards.yml
+# ----------------------------------------------------
+# This workflow, and its sibling `reusable-scan-secrets.yml`, together replace
+# what used to be a single file, `reusable-standards.yml` (three jobs: shell-lint,
+# yaml-validate, gitleaks). That name is now frozen out: "standards" names a
+# CATEGORY, not a concern, and PR #4 (open at the time of this rename, branch
+# `ci/standards-enforcement`) independently added its own, entirely different,
+# `reusable-standards.yml` at the identical path — the branch/release contract
+# (merge mode, branch targeting, protected refs, version policy, PR-title
+# convention). Two unrelated concerns racing for one filename is exactly what the
+# frozen naming rule (`reusable-<domain>-<concern>.yml`, domain one of
+# ci|scan|policy|release, concern specific and singular) exists to prevent.
+#
+# WHY THIS IS ITS OWN FILE, NOT MERGED WITH SHELL LINT
+# -------------------------------------------------------
+# The original `reusable-standards.yml` bundled a shell-lint job (`bash -n` +
+# `shellcheck -S error`) alongside this yaml-validate job under one name, on the
+# theory that both are "code quality" checks. That bundling does not survive
+# contact with PR #3 (branch `feat/unified-fleet-tiers-tags-and-semver`), which
+# independently adds `reusable-shell-ci.yml` — a fuller shell CI gate (shellcheck,
+# `bash -n`/`sh -n` parse, bats, shfmt, a depth ladder) covering the exact same
+# concern (ci + shell) this file's former shell-lint job did, only more
+# completely. Shipping a second, narrower shell-lint reusable workflow here would
+# be a near-duplicate of PR #3's file under a different name — precisely the
+# failure mode this whole naming exercise exists to stop ("one concern, one
+# owner, one file"). So the shell-lint job was DROPPED here rather than
+# renamed/kept; shell linting is PR #3's concern to own once it merges (rename to
+# `reusable-ci-shell.yml` is PR #3's job, not this PR's — do not fix it here).
+#
+# YAML parse validation has no such collision: nothing in PR #3's file list
+# covers generic YAML syntax validation, so it gets its own file rather than
+# being folded into shell CI or left orphaned.
+#
+# WHY ASSERT, NOT INSTALL
+# ------------------------
+# A reusable workflow that installs its own toolchain at runtime pays that cost on
+# every caller, every run, forever — and worse, it HIDES the real problem: the
+# runner image is missing a tool it should already carry, and nobody ever finds
+# out because the job goes green anyway. A silent pass is worse than a loud
+# failure (see the fleet's severity contract). So the job here asserts its tools
+# up front and fails with the exact fix — which class label the job is missing —
+# rather than fetching a binary.
+#
+# JOB LABEL SCHEMA (mandatory, both tokens, in this order after the base labels):
+#   runs-on: [self-hosted, linux, x64, podman, <size>, <class>]
+#     size:  micro | small | medium | large   (no size -> may land on micro and OOM)
+#     class: shell | python | rust | docs | gpu (no class -> undefined rootfs)
+# This job is `small` / `shell` — lint work, not a build.
+#
+# NOT VERIFIED: whether the fleet's `shell`-class runner image actually preinstalls
+# PyYAML. That is the assumption this file rests on, per the assert-don't-install
+# contract; it was not checked against a live runner (no runner-fleet access from
+# this task). If the image does not carry it yet, the job fails loudly naming
+# exactly what's missing, which is the intended behaviour rather than a bug.
+name: Reusable CI YAML
+
+on:
+  workflow_call:
+    inputs:
+      runner-labels:
+        description: 'JSON array of runner labels. Must carry both a size and a class token (see job label schema above).'
+        required: false
+        type: string
+        default: '["self-hosted","linux","x64","podman","small","shell"]'
+      yaml-paths:
+        description: 'Space-separated glob(s) of YAML files to parse-validate'
+        required: false
+        type: string
+        default: '.github/workflows/*.yml .github/workflows/*.yaml'
+      timeout-minutes:
+        description: 'Job timeout'
+        required: false
+        type: number
+        default: 15
+
+permissions:
+  contents: read
+
+jobs:
+  yaml-validate:
+    name: yaml-validate
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: assert toolchain
+        run: |
+          set -eu
+          command -v python3 >/dev/null || {
+            echo "::error::python3 missing — this job needs the 'shell' class label"
+            exit 1
+          }
+          python3 -c "import yaml" 2>/dev/null || {
+            echo "::error::PyYAML missing — this job needs the 'shell' class label"
+            exit 1
+          }
+
+      - name: parse every targeted YAML file
+        run: |
+          set -eu
+          shopt -s globstar nullglob
+          files=(${{ inputs.yaml-paths }})
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "no YAML files matched '${{ inputs.yaml-paths }}' — nothing to check"
+            exit 0
+          fi
+          status=0
+          for f in "${files[@]}"; do
+            echo "yaml.safe_load $f"
+            python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" "$f" \
+              || { echo "::error::$f failed to parse as YAML"; status=1; }
+          done
+          exit "$status"
