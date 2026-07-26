@@ -1,0 +1,57 @@
+# Fleet standard CI — install as .github/workflows/fleet-ci.yml
+#
+# This file is deliberately thin. All policy lives in
+# tzervas/ap-workflows/.github/workflows/reusable-ci-autodetect.yml; the only
+# things that belong here are (a) which branches this repo builds on and
+# (b) this repo's own overrides.
+#
+# STRICTNESS IS CHOSEN BY THE BRANCH YOU ARE TARGETING, not by anything set here:
+#   dev tier  (dev / devel / staging / feature -> dev)   check + test, one Python
+#                                                        version, GPU and bench skipped
+#   main tier (-> main / master)                         --all-features, clippy
+#                                                        -D warnings, doc warnings-as-errors,
+#                                                        full Python matrix, and GPU jobs
+#                                                        and benchmarks that RUN
+# The reusable workflow resolves the tier itself from `github.base_ref` /
+# `github.ref_name`, so a caller cannot get the policy wrong by editing this file.
+#
+# PIN DISCIPLINE: `@v0.1` is a MOVING tag. Central minor and patch fixes
+# reach this repo automatically. Moving to `@v0.2` is a deliberate, reviewed
+# change, because a major bump is by definition breaking. See
+# https://github.com/tzervas/ap-workflows#tag-discipline
+name: fleet-ci
+
+on:
+  push:
+    branches: [main, master, dev]
+  pull_request:
+    branches: [main, master, dev]
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: 'Force a tier (otherwise derived from the target branch)'
+        type: choice
+        options: [auto, dev, main]
+        default: auto
+
+concurrency:
+  group: fleet-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  fleet-ci:
+    uses: tzervas/ap-workflows/.github/workflows/reusable-ci-autodetect.yml@v0.1
+    with:
+      tier: ${{ inputs.tier || 'auto' }}
+      # Repo-specific overrides go here and nowhere else. If this repo needs
+      # something the reusable workflow cannot express, add an input upstream
+      # rather than forking the gate back into this file.
+      #
+      #   gpu: true            this repo has GPU-dependent tests
+      #   bench: true          this repo has benchmarks
+      #   rust-version: '1.96.1'
+      #   cargo-jobs: 1        crates that OOM at the inherited parallelism
+      #   test-args: '--no-default-features'

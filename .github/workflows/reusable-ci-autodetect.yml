@@ -1,0 +1,535 @@
+# Reusable fleet CI — the centralized source of truth for `fleet-ci.yml`.
+#
+# WHY THIS EXISTS
+# ---------------
+# Measured 2026-07-25 across 239 non-archived, non-fork repos: 225 of them carry
+# a `.github/workflows/fleet-ci.yml`, in 15 distinct byte-variants. The two
+# dominant variants cover 212 repos (120 + 92) and differ only in the Rust
+# detection heuristic — the other 13 are one-off local drift. That is the same
+# copy-paste problem `reusable-ci-rust.yml` solved for the Mycelium train, at
+# fleet scale. This workflow is the single definition; repos install a thin
+# caller that passes only its own overrides.
+#
+# JOB NAMES ARE A PUBLIC INTERFACE. DO NOT RENAME.
+# ------------------------------------------------
+#   `detect stack`, `cargo check/test`, `python lint/test`, `no stack detected`
+# are required status-check contexts in the fleet's `protec-main` / `protec-dev`
+# rulesets. Renaming one does not fail loudly — the required context simply never
+# reports, so the PR either blocks forever or, if the requirement is then
+# dropped, merges unguarded. Auto-merge is armed on part of the fleet, which
+# makes this sharp.
+#
+# JOB NAMES ARE ALSO THE FLEET'S SIZING SIGNAL.
+# ---------------------------------------------
+# `gha-runner-ctl::pool::size_for_job` derives the container CPU/RAM tier from
+# the job name and `runs-on` labels (src/pool.rs). The names below are chosen to
+# land on the right tier, and changing them silently changes the memory cap:
+#
+#   `detect stack`             -> "detect"        -> Small
+#   `cargo check/test`         -> cargo+check     -> Large
+#   `cargo all-features gate`  -> "all-features"  -> Xlarge   (main tier only)
+#   `benchmarks`               -> "benchmark"     -> Large    (main tier only)
+#   `gpu tests`                -> label `gpu`     -> Gpu (4 cpu / 8g + device)
+#   `python lint/test`         -> "lint"          -> Micro
+#
+# BRANCH-TIER STRICTNESS
+# ----------------------
+# `tier` is resolved once, centrally, in `detect stack`, from the branch the
+# change is *targeting* (`github.base_ref` on a pull_request, `github.ref_name`
+# otherwise) against the `main-branches` input. Callers do not compute it, so a
+# caller cannot get the policy wrong.
+#
+#   dev tier  -> fast feedback: check + test, one Python version, no GPU, no bench
+#   main tier -> everything completes: --all-features, clippy -D warnings, doc
+#                warnings-as-errors, the full Python version matrix, and GPU jobs
+#                and benchmarks that RUN rather than skip.
+name: Reusable CI (autodetect Rust/Python)
+
+on:
+  workflow_call:
+    inputs:
+      tier:
+        description: "Strictness tier: auto | dev | main. 'auto' derives it from the target branch."
+        required: false
+        type: string
+        default: 'auto'
+      main-branches:
+        description: 'Comma list of branches that are the stringent (main) tier'
+        required: false
+        type: string
+        default: 'main,master'
+      runner-labels:
+        description: 'JSON array of runner labels for the CPU jobs'
+        required: false
+        type: string
+        default: '["self-hosted","linux","x64","podman"]'
+      gpu-runner-labels:
+        description: 'JSON array of runner labels for the GPU job. The `gpu` label is what routes to SizeTier::Gpu.'
+        required: false
+        type: string
+        default: '["self-hosted","linux","x64","podman","gpu"]'
+      rust-version:
+        description: "Toolchain to pin. Empty = use the repo's rust-toolchain.toml / ambient cargo."
+        required: false
+        type: string
+        default: ''
+      cargo-jobs:
+        description: 'Cargo parallelism. 0 = inherit (the fleet exports CARGO_BUILD_JOBS from the container CPU quota).'
+        required: false
+        type: number
+        default: 0
+      python-version:
+        description: 'Python version used at dev tier. Fleet floor is 3.11; 3.13 preferred.'
+        required: false
+        type: string
+        default: '3.13'
+      python-versions:
+        description: 'Comma list of Python versions exercised at main tier. Every entry must be >= 3.11.'
+        required: false
+        type: string
+        default: '3.11,3.12,3.13'
+      gpu:
+        description: 'This repo has GPU-dependent tests. At main tier they RUN; at dev tier they are skipped.'
+        required: false
+        type: boolean
+        default: false
+      gpu-required:
+        description: 'At main tier, fail if no usable GPU is present rather than reporting a green skip.'
+        required: false
+        type: boolean
+        default: true
+      bench:
+        description: 'This repo has benchmarks. At main tier they RUN fresh; at dev tier they are skipped.'
+        required: false
+        type: boolean
+        default: false
+      bench-required:
+        description: 'At main tier, fail if no benchmark targets are found rather than reporting a green no-op.'
+        required: false
+        type: boolean
+        default: true
+      deny-warnings:
+        description: 'clippy -D warnings at main tier'
+        required: false
+        type: boolean
+        default: true
+      all-features:
+        description: 'Pass --all-features in the main-tier gate'
+        required: false
+        type: boolean
+        default: true
+      test-args:
+        description: 'Extra args appended to cargo test (repo-specific override, e.g. --no-default-features)'
+        required: false
+        type: string
+        default: ''
+      timeout-minutes:
+        description: 'Timeout for the standard CPU jobs'
+        required: false
+        type: number
+        default: 45
+      heavy-timeout-minutes:
+        description: 'Timeout for the main-tier gate, GPU and benchmark jobs'
+        required: false
+        type: number
+        default: 90
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # `detect stack` — required context. Also the single place tier is decided.
+  # ---------------------------------------------------------------------------
+  detect:
+    name: detect stack
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
+    timeout-minutes: 15
+    outputs:
+      rust: ${{ steps.d.outputs.rust }}
+      python: ${{ steps.d.outputs.python }}
+      tier: ${{ steps.t.outputs.tier }}
+    steps:
+      - name: Resolve tier (never-silent)
+        id: t
+        env:
+          TIER_IN: ${{ inputs.tier }}
+          MAIN_BRANCHES: ${{ inputs.main-branches }}
+          # base_ref is set only on pull_request; ref_name on push/dispatch.
+          TARGET: ${{ github.base_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          case "$TIER_IN" in
+            dev|main)
+              tier="$TIER_IN"
+              echo "tier pinned by caller: $tier"
+              ;;
+            auto)
+              tier=dev
+              # Exact match against the comma list; substring matching would make
+              # a branch called `maintenance/main-fix` main tier by accident.
+              IFS=',' read -ra mains <<< "$MAIN_BRANCHES"
+              for b in "${mains[@]}"; do
+                b="$(echo "$b" | tr -d '[:space:]')"
+                [ -n "$b" ] || continue
+                if [ "$TARGET" = "$b" ]; then tier=main; break; fi
+              done
+              echo "target branch '$TARGET' vs main-branches '$MAIN_BRANCHES' -> tier=$tier"
+              ;;
+            *)
+              echo "::error::tier must be auto|dev|main, got '$TIER_IN'"
+              exit 1
+              ;;
+          esac
+          echo "tier=$tier" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Fleet CI tier: \`$tier\`"
+            echo ""
+            echo "Target branch: \`$TARGET\`"
+            if [ "$tier" = "main" ]; then
+              echo "Main tier: \`--all-features\`, \`clippy -D warnings\`, doc warnings-as-errors,"
+              echo "full Python version matrix, and GPU/benchmark jobs run rather than skip."
+            else
+              echo "Dev tier: check + test for fast feedback. GPU and benchmark jobs are skipped here"
+              echo "by design; they are mandatory on the way into a main-tier branch."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Detect stack
+        id: d
+        run: |
+          set -euo pipefail
+          rust=false; python=false
+          # Real Rust crate or non-empty workspace members only. An empty virtual
+          # workspace (members = []) must not enable cargo jobs, and a commented-out
+          # `# members = ["crates/..."]` must not count as one either. This is the
+          # stricter of the two heuristics that were in circulation across the fleet.
+          if [ -f Cargo.toml ]; then
+            if grep -qE '^\[package\]' Cargo.toml; then
+              rust=true
+            elif grep -vE '^\s*#' Cargo.toml \
+              | grep -qE 'members\s*=\s*\[[^]]*["'\''][^"'\'']'; then
+              rust=true
+            elif find . -path ./target -prune -o -name Cargo.toml -print 2>/dev/null \
+              | grep -v '^\./Cargo.toml$' | head -1 | grep -q .; then
+              rust=true
+            fi
+          fi
+          if [ -f pyproject.toml ] || [ -f requirements.txt ] || [ -f setup.py ]; then python=true; fi
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"
+          echo "python=$python" >> "$GITHUB_OUTPUT"
+          echo "Detected rust=$rust python=$python"
+
+  # ---------------------------------------------------------------------------
+  # `cargo check/test` — required context, runs at BOTH tiers. This is the fast
+  # gate; the main tier adds the `cargo all-features gate` job on top rather than
+  # widening this one, so the memory profile of this job stays predictable
+  # (Large). Widening it in place would push it past its container cap.
+  # ---------------------------------------------------------------------------
+  rust:
+    name: cargo check/test
+    needs: detect
+    if: needs.detect.outputs.rust == 'true'
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Pin toolchain
+        if: inputs.rust-version != ''
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.rust-version }}
+
+      - name: Cargo parallelism
+        if: inputs.cargo-jobs != 0
+        run: echo "CARGO_BUILD_JOBS=${{ inputs.cargo-jobs }}" >> "$GITHUB_ENV"
+
+      - name: cargo check
+        run: cargo check --workspace --all-targets
+
+      - name: cargo test
+        run: cargo test --workspace ${{ inputs.test-args }}
+
+  # ---------------------------------------------------------------------------
+  # `cargo all-features gate` — MAIN TIER ONLY. Job name contains "all-features",
+  # which routes it to SizeTier::Xlarge, because that is what a full-feature
+  # workspace compile actually costs.
+  # ---------------------------------------------------------------------------
+  rust-strict:
+    name: cargo all-features gate
+    needs: detect
+    if: needs.detect.outputs.rust == 'true' && needs.detect.outputs.tier == 'main'
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
+    timeout-minutes: ${{ inputs.heavy-timeout-minutes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Pin toolchain
+        if: inputs.rust-version != ''
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.rust-version }}
+          components: rustfmt, clippy
+
+      - name: Ensure rustfmt + clippy
+        run: rustup component add rustfmt clippy 2>/dev/null || true
+
+      - name: Resolve flags
+        id: f
+        run: |
+          set -euo pipefail
+          feat=""
+          [ "${{ inputs.all-features }}" = "true" ] && feat="--all-features"
+          clip="-W warnings"
+          [ "${{ inputs.deny-warnings }}" = "true" ] && clip="-D warnings"
+          echo "feat=$feat" >> "$GITHUB_OUTPUT"
+          echo "clip=$clip" >> "$GITHUB_OUTPUT"
+          if [ "${{ inputs.cargo-jobs }}" != "0" ]; then
+            echo "CARGO_BUILD_JOBS=${{ inputs.cargo-jobs }}" >> "$GITHUB_ENV"
+          fi
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets ${{ steps.f.outputs.feat }} -- ${{ steps.f.outputs.clip }}
+
+      - name: cargo check (all features)
+        run: cargo check --workspace --all-targets ${{ steps.f.outputs.feat }}
+
+      - name: cargo test (all features)
+        run: cargo test --workspace ${{ steps.f.outputs.feat }} ${{ inputs.test-args }}
+
+      - name: cargo doc
+        run: cargo doc --workspace --no-deps ${{ steps.f.outputs.feat }}
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # ---------------------------------------------------------------------------
+  # `gpu tests` — MAIN TIER ONLY, and it must COMPLETE rather than report a green
+  # skip. The fleet's GPU listeners register the `gpu` label and attach the
+  # device (gha-runner-ctl SizeTier::Gpu, 4 cpu / 8g). If the runner that picks
+  # this up has no usable device, `gpu-required` makes it fail loudly instead of
+  # quietly passing — a GPU gate that silently no-ops is worse than no gate.
+  # ---------------------------------------------------------------------------
+  gpu:
+    name: gpu tests
+    needs: detect
+    if: inputs.gpu && needs.detect.outputs.tier == 'main'
+    runs-on: ${{ fromJSON(inputs.gpu-runner-labels) }}
+    timeout-minutes: ${{ inputs.heavy-timeout-minutes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Assert GPU present (never-silent)
+        run: |
+          set -euo pipefail
+          if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q .; then
+            nvidia-smi
+            echo "gpu=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if [ "${{ inputs.gpu-required }}" = "true" ]; then
+            echo "::error::main tier requires GPU tests to complete, but no usable GPU was found on this runner." >&2
+            echo "::error::Either attach a device to the gpu-labelled listener, or set gpu-required=false to accept an advisory skip." >&2
+            exit 1
+          fi
+          echo "::warning::no GPU on this runner and gpu-required=false — advisory skip."
+          echo "gpu=0" >> "$GITHUB_ENV"
+
+      - name: Pin toolchain
+        if: inputs.rust-version != ''
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.rust-version }}
+
+      - name: cargo test (gpu features)
+        if: env.gpu == '1'
+        run: |
+          set -euo pipefail
+          # Prefer an explicit `gpu` or `cuda` feature when the crate declares one;
+          # otherwise run the suite on the GPU host so device-gated #[ignore]d tests
+          # get their chance.
+          feat=""
+          if grep -qE '^\s*(gpu|cuda)\s*=' Cargo.toml 2>/dev/null; then
+            grep -qE '^\s*gpu\s*=' Cargo.toml && feat="--features gpu" || feat="--features cuda"
+          fi
+          echo "gpu feature flags: ${feat:-<none declared>}"
+          # $feat is a deliberate word-split flag pair, not an accident.
+          # shellcheck disable=SC2086
+          cargo test --workspace $feat -- --include-ignored
+
+  # ---------------------------------------------------------------------------
+  # `benchmarks` — MAIN TIER ONLY, run FRESH (no incremental reuse) so the
+  # numbers mean something. Job name contains "benchmark" -> SizeTier::Large.
+  # ---------------------------------------------------------------------------
+  bench:
+    name: benchmarks
+    needs: detect
+    if: inputs.bench && needs.detect.outputs.rust == 'true' && needs.detect.outputs.tier == 'main'
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
+    timeout-minutes: ${{ inputs.heavy-timeout-minutes }}
+    env:
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Pin toolchain
+        if: inputs.rust-version != ''
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.rust-version }}
+
+      - name: Assert benchmark targets exist (never-silent)
+        run: |
+          set -euo pipefail
+          found=0
+          find . -path ./target -prune -o -type d -name benches -print 2>/dev/null | grep -q . && found=1
+          grep -rqE '^\s*\[\[bench\]\]' --include=Cargo.toml . 2>/dev/null && found=1
+          if [ "$found" = "0" ]; then
+            if [ "${{ inputs.bench-required }}" = "true" ]; then
+              echo "::error::bench=true but no benches/ directory and no [[bench]] target was found." >&2
+              echo "::error::A benchmark gate that finds nothing to run is a green no-op. Add benches, or set bench=false." >&2
+              exit 1
+            fi
+            echo "::warning::no benchmark targets found and bench-required=false — advisory skip."
+          fi
+          echo "found=$found" >> "$GITHUB_ENV"
+
+      - name: cargo bench (fresh)
+        if: env.found == '1'
+        run: cargo bench --workspace --no-fail-fast
+
+  # ---------------------------------------------------------------------------
+  # `python lint/test` — required context. Single job on purpose: a matrix would
+  # rename the reported contexts to `python lint/test (3.11)` etc. and silently
+  # un-gate every ruleset that requires `python lint/test`. The versions are
+  # therefore looped inside the job. uv fetches interpreters, so the runner image
+  # does not need them preinstalled.
+  # ---------------------------------------------------------------------------
+  python:
+    name: python lint/test
+    needs: detect
+    if: needs.detect.outputs.python == 'true'
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Resolve Python versions for this tier (floor 3.11)
+        id: pv
+        env:
+          TIER: ${{ needs.detect.outputs.tier }}
+          DEV_V: ${{ inputs.python-version }}
+          MAIN_V: ${{ inputs.python-versions }}
+        run: |
+          set -euo pipefail
+          if [ "$TIER" = "main" ]; then vers="$MAIN_V"; else vers="$DEV_V"; fi
+          vers="$(echo "$vers" | tr -d '[:space:]')"
+          # The fleet floor is 3.11. 3.10 and below are end-of-support for this
+          # fleet and must not silently sneak back in through a caller override.
+          IFS=',' read -ra list <<< "$vers"
+          for v in "${list[@]}"; do
+            maj="${v%%.*}"; rest="${v#*.}"; min="${rest%%.*}"
+            if [ "$maj" -lt 3 ] || { [ "$maj" -eq 3 ] && [ "$min" -lt 11 ]; }; then
+              echo "::error::python version '$v' is below the fleet floor of 3.11" >&2
+              exit 1
+            fi
+          done
+          echo "versions=$vers" >> "$GITHUB_OUTPUT"
+          echo "tier=$TIER python versions: $vers"
+
+      - name: Sync (best-effort)
+        run: |
+          set -euo pipefail
+          if [ -f uv.lock ] || [ -f pyproject.toml ]; then
+            uv sync --all-groups 2>/dev/null || uv sync 2>/dev/null || true
+          fi
+
+      - name: Ruff lint (if configured)
+        run: |
+          set -euo pipefail
+          if [ -f pyproject.toml ] && grep -q '\[tool.ruff' pyproject.toml 2>/dev/null; then
+            uv run ruff check . || python -m ruff check .
+          elif [ -f ruff.toml ] || [ -f .ruff.toml ]; then
+            uv run ruff check .
+          else
+            echo "ruff not configured — skip"
+          fi
+
+      - name: Ruff format check (main tier only)
+        if: needs.detect.outputs.tier == 'main'
+        run: |
+          set -euo pipefail
+          if [ -f pyproject.toml ] && grep -q '\[tool.ruff' pyproject.toml 2>/dev/null; then
+            uv run ruff format --check . || python -m ruff format --check .
+          else
+            echo "ruff not configured — skip"
+          fi
+
+      - name: Pytest across tier versions
+        env:
+          VERSIONS: ${{ steps.pv.outputs.versions }}
+        run: |
+          set -euo pipefail
+          if [ ! -d tests ] && [ ! -d test ]; then
+            echo "no tests/ directory — skip"
+            exit 0
+          fi
+          rc=0
+          IFS=',' read -ra list <<< "$VERSIONS"
+          for v in "${list[@]}"; do
+            echo "::group::pytest on Python $v"
+            if ! uv run --python "$v" pytest -q; then
+              echo "::error::pytest failed on Python $v"
+              rc=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$rc"
+
+  # ---------------------------------------------------------------------------
+  # `no stack detected` — required context. Keeps the contract honest for repos
+  # with neither Cargo.toml nor a Python project: the gate reports success but
+  # says out loud that it verified nothing.
+  # ---------------------------------------------------------------------------
+  noop:
+    name: no stack detected
+    needs: detect
+    if: needs.detect.outputs.rust != 'true' && needs.detect.outputs.python != 'true'
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
+    timeout-minutes: 10
+    steps:
+      - run: |
+          echo "No Cargo.toml / pyproject detected. fleet-ci reports success with no gates."
+          echo "Add stack files or a product-specific CI job for real coverage."
+          {
+            echo "### no stack detected"
+            echo ""
+            echo "This repo has neither a Rust crate nor a Python project at the root."
+            echo "**Nothing was verified.** Treat a green tick here as 'not applicable', not 'tested'."
+          } >> "$GITHUB_STEP_SUMMARY"

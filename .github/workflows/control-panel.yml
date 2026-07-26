@@ -129,7 +129,7 @@ jobs:
     name: local ci
     needs: resolve
     if: inputs.scope == 'this-repo-only' && (inputs.action == 'ci' || inputs.action == 'ci+security')
-    uses: ./.github/workflows/reusable-rust-ci.yml
+    uses: ./.github/workflows/reusable-ci-rust.yml
     with:
       rust-version: ${{ inputs.rust_version }}
       depth: ${{ inputs.depth }}

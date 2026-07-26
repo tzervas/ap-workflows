@@ -1,0 +1,29 @@
+# Component-repo YAML lint. Install as .github/workflows/ci-yaml.yml
+#
+# Calls reusable-ci-yaml.yml (formerly the yaml-validate job inside
+# reusable-standards.yml, before that name was retired — see that workflow's
+# header in tzervas/ap-workflows for why).
+#
+# The whole gate is centralized: to change policy for all repos, edit
+# reusable-ci-yaml.yml in tzervas/ap-workflows — not one file per repo.
+name: ci-yaml
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-yaml-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  yaml-validate:
+    uses: tzervas/ap-workflows/.github/workflows/reusable-ci-yaml.yml@main
+    with:
+      runner-labels: '["self-hosted","linux","x64","podman","small","shell"]'
