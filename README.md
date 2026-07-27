@@ -19,13 +19,51 @@ non-archived** repositories (the 7 archived repos are out of scope):
 | Go | 4 | not covered — see USAGE.md |
 | TypeScript | 2 | not covered — see USAGE.md |
 | Makefile | 2 | — |
-| Dockerfile | 2 | — |
+| Dockerfile | 2 | `reusable-image-build.yml` |
 | HCL | 1 | — |
 | Batchfile | 1 | — |
 
 47 of those non-archived repos are the `*-myc` native-language train.
 `reusable-ci-mycelium.yml` is **prepped and deliberately not adopted** — see
 below and the header of the file itself.
+
+## Container images
+
+`reusable-image-build.yml` builds a container image and pushes it to GHCR.
+
+It is **podman-first, not `docker/build-push-action`** — and that is not a
+preference. The fleet's self-hosted runners are rootless podman with
+`no_new_privs`, so they have no Docker daemon and no way to obtain one: a job
+cannot `sudo` anything into place there. A Docker-based build action simply
+cannot run on the fleet. This workflow uses whichever engine is present, so one
+caller works on `ubuntu-latest` and on the fleet with only `runner-labels`
+differing.
+
+The same constraint is why images matter at all here. Every
+`sudo apt-get install <tool>` in a fleet workflow is unfixable on a rootless
+runner; the durable answer is a base image that already carries the tool.
+`images/runner-base/Containerfile` is that image — it carries `gh`, `sops`,
+`shellcheck`, `age`, `jq` and `python3`+`pyyaml`, and verifies at build time
+that each is present rather than letting a broken layer surface in someone's CI
+an hour later.
+
+**Layering follows the same shape as the workflows: high-level defaults,
+overridden lower down.** A fleet base is published once; project- and repo-level
+images build on top of it via the `base-image` input rather than duplicating its
+contents:
+
+```yaml
+jobs:
+  image:
+    uses: tzervas/ap-workflows/.github/workflows/reusable-image-build.yml@v0.1
+    with:
+      base-image: ghcr.io/tzervas/ap-workflows/runner-base:latest
+      push: ${{ github.ref == 'refs/heads/main' }}
+```
+
+Keep the fleet base boring and slow-moving — a tool only one repo needs belongs
+in that repo's own image, since every repo inherits this one's size.
+`templates/caller-image-build.yml` is the drop-in caller.
 
 See **[USAGE.md](USAGE.md)** for the full interface and **[TOKENS.md](TOKENS.md)** for the
 three-token model (they are *not* interchangeable — `FLEET_DISPATCH_TOKEN` is far

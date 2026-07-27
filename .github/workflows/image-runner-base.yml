@@ -1,0 +1,68 @@
+# Build and publish the fleet runner base image.
+#
+# This repo calls its own reusable workflow — the same entry point component
+# repos use — so the interface is exercised by its owner rather than only by
+# consumers. If this breaks, every caller was about to break too.
+#
+# The image carries the tools a rootless job cannot install for itself (gh,
+# sops, shellcheck, age, jq, python3+pyyaml). See images/runner-base/Containerfile
+# for why that constraint exists.
+#
+# PRs build without pushing. main and version tags publish.
+name: image-runner-base
+
+on:
+  workflow_dispatch:
+    inputs:
+      push:
+        description: 'Push to GHCR'
+        type: boolean
+        default: false
+      runner:
+        description: 'Where to build'
+        type: choice
+        options: [github-hosted, self-hosted-fleet]
+        default: github-hosted
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'images/runner-base/**'
+      - '.github/workflows/image-runner-base.yml'
+      - '.github/workflows/reusable-image-build.yml'
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'images/runner-base/**'
+      - '.github/workflows/image-runner-base.yml'
+      - '.github/workflows/reusable-image-build.yml'
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: image-runner-base-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    uses: ./.github/workflows/reusable-image-build.yml
+    with:
+      image-name: 'tzervas/ap-workflows/runner-base'
+      containerfile: 'images/runner-base/Containerfile'
+      context: 'images/runner-base'
+      push: >-
+        ${{ inputs.push
+            || (github.event_name == 'push'
+                && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) }}
+      # Built on GitHub-hosted by default. The fleet runners are the CONSUMERS
+      # of this image; building it there would mean the image that fixes the
+      # tooling gap can only be built by a runner that already has the tools.
+      runner-labels: >-
+        ${{ inputs.runner == 'self-hosted-fleet'
+            && '["self-hosted","linux","x64","podman"]'
+            || '["ubuntu-latest"]' }}
+      extra-tags: >-
+        ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main')
+            && 'latest' || '' }}
