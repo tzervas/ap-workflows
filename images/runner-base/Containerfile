@@ -26,12 +26,54 @@
 # belongs in that repo's own image, not here — this one is rebuilt rarely and
 # every repo inherits its size.
 #
-# BASE_IMAGE is an ARG so this file can be retargeted without editing it. The
-# default is a plain Ubuntu LTS; point it at the actual actions-runner base in
-# use if that differs, since this image must still be able to host the runner.
-# Pin by digest so rebuilds do not silently pick up a different 24.04 tip.
-# Index digest for multi-arch ubuntu:24.04 (Docker Hub, as of sec-20260728).
+# ── sec-20260728-high ─────────────────────────────────────────────────────────
+# Upstream gh 2.96.0 / trivy 0.72.0 / sops 3.13.3 are already latest stable, but
+# the release binaries still embed fixable HIGH go-module CVEs (grpc, oras-go,
+# stdlib). This image multi-stage rebuilds gh + trivy from those release tags
+# with go 1.26.5 and forced module bumps; only the resulting static binaries
+# land in the final image. sops release binary is clean and stays tarball-based.
+# Residual unfixed: oras-go CVE-2026-50163 (no FixedVersion upstream yet).
+
+# Global ARGs for FROM lines (must sit above every FROM).
+# GO_IMAGE is build-only; BASE_IMAGE is the published fleet runtime.
+# GO_IMAGE digest is the bookworm image config (linux/amd64) as of sec-20260728-high.
+# BASE_IMAGE index digest for multi-arch ubuntu:24.04 (Docker Hub, as of sec-20260728).
+ARG GO_IMAGE=golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651
 ARG BASE_IMAGE=ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
+
+FROM ${GO_IMAGE} AS go-tools
+
+# Use the image's toolchain (1.26.5) rather than downloading go.mod toolchain.
+ENV GOTOOLCHAIN=local \
+    CGO_ENABLED=0 \
+    GOPROXY=https://proxy.golang.org,direct
+
+ARG GH_VERSION=2.96.0
+ARG TRIVY_VERSION=0.72.0
+# Module floors that clear fixable HIGH findings in the release binaries.
+ARG GRPC_VERSION=v1.82.1
+ARG ORAS_VERSION=v2.6.1
+
+RUN set -eu; \
+    mkdir -p /out; \
+    git clone --depth 1 --branch "v${GH_VERSION}" https://github.com/cli/cli.git /src/cli; \
+    cd /src/cli; \
+    go get "google.golang.org/grpc@${GRPC_VERSION}"; \
+    go mod tidy; \
+    go build -trimpath \
+      -ldflags "-s -w -X github.com/cli/cli/v2/internal/build.Version=v${GH_VERSION}-sec -X github.com/cli/cli/v2/internal/build.Date=2026-07-28" \
+      -o /out/gh ./cmd/gh; \
+    git clone --depth 1 --branch "v${TRIVY_VERSION}" https://github.com/aquasecurity/trivy.git /src/trivy; \
+    cd /src/trivy; \
+    go get "google.golang.org/grpc@${GRPC_VERSION}" "oras.land/oras-go/v2@${ORAS_VERSION}"; \
+    go mod tidy; \
+    GOEXPERIMENT=jsonv2 go build -trimpath \
+      -ldflags "-s -w -extldflags '-static' -X github.com/aquasecurity/trivy/pkg/version/app.ver=${TRIVY_VERSION}-sec" \
+      -o /out/trivy ./cmd/trivy; \
+    /out/gh --version; \
+    /out/trivy --version
+
+# Final runtime image (fleet runner base). BASE_IMAGE ARG is declared globally above.
 FROM ${BASE_IMAGE}
 
 # NO `SHELL ["/bin/bash", "-o", "pipefail", "-c"]` HERE — it does not work, and
@@ -74,7 +116,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 #   shellcheck                reusable-ci-shell.yml FAILS rather than skipping
 #                             when a requested tool is missing
 #   age                       sops' encryption backend
-#   gh / sops / trivy         release-tarball installs below (checksum-verified)
+#   gh / sops / trivy         gh+trivy from go-tools stage; sops release tarball
 # apt-get upgrade applies current Ubuntu security patches for OS packages
 # before the install set lands (sec-20260728 hardening pass).
 RUN apt-get update -qq \
@@ -93,38 +135,17 @@ RUN apt-get update -qq \
         gzip \
     && rm -rf /var/lib/apt/lists/*
 
-# ── gh: the tool whose absence started this ───────────────────────────────────
-# close-issues-on-{main,merge}.yml need it. Installed from the release tarball
-# rather than the apt repo so the version is explicit and the layer does not
-# depend on a third-party apt source staying reachable.
-#
-# GH_VERSION 2.96.0 rebuilds the binary on a newer Go toolchain, clearing
-# CRITICAL stdlib (CVE-2025-68121) and google.golang.org/grpc (CVE-2026-33186)
-# that shipped in usr/local/bin/gh from 2.65.0. Checksums are fetched from the
-# GitHub release at build time (gh_*_checksums.txt) — never invented here.
-# Verified release assets (v2.96.0):
-#   amd64 tar.gz sha256:83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60
-#   arm64 tar.gz sha256:06f86ec7103d41993b76cd78072f43595c34aaa56506d971d9860e67140bf909
-ARG GH_VERSION=2.96.0
+# ── gh + trivy: rebuilt from release tags with HIGH-fixing go modules ────────
+# See go-tools stage. Version labels carry a "-sec" suffix so `tool --version`
+# shows this is not the stock upstream release binary.
+COPY --from=go-tools /out/gh /usr/local/bin/gh
+COPY --from=go-tools /out/trivy /usr/local/bin/trivy
 RUN set -eu; \
-    case "$(dpkg --print-architecture)" in \
-      amd64) GH_ARCH=amd64 ;; \
-      arm64) GH_ARCH=arm64 ;; \
-      *) echo "unsupported architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
-    esac; \
-    TB="gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz"; \
-    BASE="https://github.com/cli/cli/releases/download/v${GH_VERSION}"; \
-    cd /tmp; \
-    curl -fsSL -o "$TB" "${BASE}/${TB}"; \
-    curl -fsSL -o sums "${BASE}/gh_${GH_VERSION}_checksums.txt"; \
-    grep " ${TB}\$" sums > expected.sha256; \
-    sha256sum -c expected.sha256; \
-    tar -xzf "$TB"; \
-    install -m 0755 "gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh" /usr/local/bin/gh; \
-    rm -rf /tmp/*; \
-    gh --version
+    gh --version; \
+    trivy --version
 
 # ── sops: pinned and checksum-verified, matching setup-laptop.sh ──────────────
+# Upstream release binary has 0 HIGH findings; keep the tarball install.
 ARG SOPS_VERSION=3.13.3
 RUN set -eu; \
     case "$(dpkg --print-architecture)" in \
@@ -142,29 +163,6 @@ RUN set -eu; \
     install -m 0755 "$BIN" /usr/local/bin/sops; \
     rm -rf /tmp/*; \
     sops --version
-
-# ── trivy: required by fleet-ops CI-QUALITY-GATES §5 / reusable-scan-secrets-vuln
-# Without this binary on the runner image, required "trivy filesystem …" checks
-# can go green in sub-second while scanning nothing (tool missing → soft skip).
-# Pin: aquasecurity/trivy v0.72.0 (latest stable as of 2026-07-27).
-ARG TRIVY_VERSION=0.72.0
-RUN set -eu; \
-    case "$(dpkg --print-architecture)" in \
-      amd64) TARCH=64bit ;; \
-      arm64) TARCH=ARM64 ;; \
-      *) echo "unsupported architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
-    esac; \
-    TB="trivy_${TRIVY_VERSION}_Linux-${TARCH}.tar.gz"; \
-    BASE="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"; \
-    cd /tmp; \
-    curl -fsSL -o "$TB" "${BASE}/${TB}"; \
-    curl -fsSL -o sums "${BASE}/trivy_${TRIVY_VERSION}_checksums.txt"; \
-    grep " ${TB}\$" sums > expected.sha256; \
-    sha256sum -c expected.sha256; \
-    tar -xzf "$TB" trivy; \
-    install -m 0755 trivy /usr/local/bin/trivy; \
-    rm -rf /tmp/*; \
-    trivy --version
 
 # Language toolchains (rustc, cargo, ruff, python venvs, go, …) belong in
 # derived images that build FROM this base via the reusable workflow's
