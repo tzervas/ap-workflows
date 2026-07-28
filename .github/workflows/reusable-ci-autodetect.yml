@@ -198,7 +198,7 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -240,7 +240,7 @@ jobs:
     runs-on: ${{ fromJSON(inputs.runner-labels) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -272,7 +272,7 @@ jobs:
     runs-on: ${{ fromJSON(inputs.runner-labels) }}
     timeout-minutes: ${{ inputs.heavy-timeout-minutes }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -331,7 +331,7 @@ jobs:
     runs-on: ${{ fromJSON(inputs.gpu-runner-labels) }}
     timeout-minutes: ${{ inputs.heavy-timeout-minutes }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -386,7 +386,7 @@ jobs:
     env:
       CARGO_INCREMENTAL: '0'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -430,12 +430,12 @@ jobs:
     runs-on: ${{ fromJSON(inputs.runner-labels) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
           enable-cache: true

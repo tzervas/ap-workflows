@@ -120,7 +120,7 @@ jobs:
           esac
           echo "depth=${{ inputs.depth }}"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Locate the Mycelium toolchain
         id: tc

@@ -115,7 +115,7 @@ jobs:
       digest: ${{ steps.push.outputs.digest }}
       pushed: ${{ steps.push.outputs.pushed }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Select build engine
         id: engine
