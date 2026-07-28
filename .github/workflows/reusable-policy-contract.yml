@@ -219,21 +219,93 @@ jobs:
           path: .standards-src
           persist-credentials: false
 
+      # PyYAML is required by scripts/standards_check.py (full workflow parse via
+      # yaml.safe_load). Preferred path: the runner image already has it
+      # (fleet-runner-base / ap-workflows runner-base ship python3-yaml). When it
+      # is missing, every fallback must work rootless — no sudo, no write into
+      # /usr. System `pip install` / `uv pip install --system` fail on
+      # PEP-668 / rootless runners; we install into a user-writable target under
+      # RUNNER_TEMP (or $HOME/.local) and export PYTHONPATH for later steps.
       - name: Ensure PyYAML
         run: |
           set -euo pipefail
-          if python3 -c 'import yaml' 2>/dev/null; then
-            echo "PyYAML already present"
-          elif command -v uv >/dev/null 2>&1 && uv pip install --system --quiet pyyaml 2>/dev/null; then
-            echo "PyYAML installed via uv"
-          elif python3 -m pip install --quiet --disable-pip-version-check pyyaml 2>/dev/null; then
-            echo "PyYAML installed via pip"
-          elif python3 -m pip install --quiet --disable-pip-version-check --break-system-packages pyyaml 2>/dev/null; then
-            echo "PyYAML installed via pip --break-system-packages"
+
+          have_yaml() { python3 -c 'import yaml' 2>/dev/null; }
+
+          prepend_pythonpath() {
+            # $1 = directory that must be importable in this step and the next.
+            local dir="$1"
+            export PYTHONPATH="${dir}${PYTHONPATH:+:${PYTHONPATH}}"
+            if [ -n "${GITHUB_ENV:-}" ]; then
+              # GITHUB_ENV cannot expand shell vars on read; write the concrete value.
+              echo "PYTHONPATH=${PYTHONPATH}" >> "${GITHUB_ENV}"
+            fi
+          }
+
+          if have_yaml; then
+            echo "PyYAML already present (ambient / image)"
           else
-            echo "::error title=standards: PyYAML unavailable::The checker cannot parse workflows without PyYAML, so it cannot tell whether they are valid. That is UNKNOWN, not empty, and the contract requires it to fail loudly rather than report a green gate that measured nothing. Fix: install python3-yaml on the runner image."
-            exit 1
+            # Writable, location-agnostic site dir. Prefer RUNNER_TEMP (GHA), else
+            # TMPDIR, else /tmp. Never requires root.
+            SITE="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/standards-pyyaml-site"
+            mkdir -p "${SITE}"
+            method=""
+
+            # 1) uv into a target dir (rootless; no --system write needed)
+            if [ -z "${method}" ] && command -v uv >/dev/null 2>&1; then
+              if uv pip install --python "$(command -v python3)" --target "${SITE}" --quiet pyyaml 2>/dev/null; then
+                prepend_pythonpath "${SITE}"
+                method="uv --target ${SITE}"
+              elif uv pip install --system --break-system-packages --quiet pyyaml 2>/dev/null; then
+                method="uv --system --break-system-packages"
+              fi
+            fi
+
+            # 2) pip --user into $HOME/.local (rootless; PEP-668 needs --break-system-packages)
+            if [ -z "${method}" ]; then
+              if python3 -m pip install --quiet --disable-pip-version-check \
+                   --user --break-system-packages pyyaml 2>/dev/null; then
+                # User site is on sys.path when ENABLE_USER_SITE is true (default).
+                method="pip --user --break-system-packages"
+              fi
+            fi
+
+            # 3) pip --target into RUNNER_TEMP (rootless; no user-site dependency)
+            if [ -z "${method}" ]; then
+              if python3 -m pip install --quiet --disable-pip-version-check \
+                   --target "${SITE}" pyyaml 2>/dev/null; then
+                prepend_pythonpath "${SITE}"
+                method="pip --target ${SITE}"
+              fi
+            fi
+
+            # 4) Last resort: download a manylinux wheel into RUNNER_TEMP and
+            #    PYTHONPATH the extracted contents. No sudo; needs egress.
+            if [ -z "${method}" ]; then
+              WHEELS="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/standards-pyyaml-wheels"
+              mkdir -p "${WHEELS}"
+              if python3 -m pip download --dest "${WHEELS}" --only-binary=:all: \
+                   --disable-pip-version-check "PyYAML" 2>/dev/null; then
+                # Case-insensitive glob: wheels are named pyyaml-*.whl on PyPI.
+                wheel="$(find "${WHEELS}" -maxdepth 1 \( -name 'PyYAML*.whl' -o -name 'pyyaml*.whl' \) | head -n1 || true)"
+                if [ -n "${wheel}" ]; then
+                  # Single-line: a multi-line python -c would de-indent and break the
+                  # YAML block scalar. zipfile is stdlib; wheels are zip archives.
+                  python3 -c 'import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' \
+                    "${wheel}" "${SITE}"
+                  prepend_pythonpath "${SITE}"
+                  method="wheel-extract ${wheel}"
+                fi
+              fi
+            fi
+
+            if [ -z "${method}" ] || ! have_yaml; then
+              echo "::error title=standards: PyYAML unavailable::The checker cannot parse workflows without PyYAML, so it cannot tell whether they are valid. That is UNKNOWN, not empty, and the contract requires it to fail loudly rather than report a green gate that measured nothing. Preferred fix: bake python3-yaml into the runner image (fleet-runner-base / ap-workflows runner-base already do). Rootless fallbacks (uv/pip --target into RUNNER_TEMP, pip --user, wheel extract) also failed — usually no egress on the runner, or no pip/uv. Install python3-yaml on the image or restore package egress."
+              exit 1
+            fi
+            echo "PyYAML installed via ${method}"
           fi
+
           python3 -c 'import sys, yaml; print("python", sys.version.split()[0], "/ pyyaml", yaml.__version__)'
 
       - name: Check development standards
