@@ -10,6 +10,7 @@ repo, then confirm with `tofu plan` that it reports 0 to add / 0 to destroy.
 
 Usage: gen-imports.py [owner]     (default owner: tzervas)
 """
+
 import json
 import subprocess
 import sys
@@ -24,8 +25,12 @@ from scope import expand  # noqa: E402
 
 def rulesets(repo: str) -> list[dict]:
     try:
-        r = subprocess.run(["gh", "api", f"repos/{OWNER}/{repo}/rulesets"],
-                           capture_output=True, text=True, timeout=60)
+        r = subprocess.run(
+            ["gh", "api", f"repos/{OWNER}/{repo}/rulesets"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
         return json.loads(r.stdout or "[]") if r.returncode == 0 else []
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
         return []
@@ -39,8 +44,11 @@ def address(repo: str, name: str) -> str | None:
         res = "umbrella_dev" if umbrella else "component_dev"
     else:
         return None
-    return (f"github_repository_ruleset.{res}" if umbrella
-            else f'github_repository_ruleset.{res}["{repo}"]')
+    return (
+        f"github_repository_ruleset.{res}"
+        if umbrella
+        else f'github_repository_ruleset.{res}["{repo}"]'
+    )
 
 
 def main() -> int:

@@ -43,9 +43,11 @@ from typing import Any, Callable, Iterable, Sequence
 try:
     import yaml
 except ImportError:  # pragma: no cover - the workflow installs it first
-    print("::error title=standards: PyYAML missing::The checker cannot parse workflows "
-          "without PyYAML. This is UNKNOWN, not empty — refusing to report green. "
-          "Fix: pip install pyyaml")
+    print(
+        "::error title=standards: PyYAML missing::The checker cannot parse workflows "
+        "without PyYAML. This is UNKNOWN, not empty — refusing to report green. "
+        "Fix: pip install pyyaml"
+    )
     sys.exit(2)
 
 try:
@@ -228,8 +230,10 @@ def load_config() -> Config:
             "STD_COMMIT_TYPES",
             "feat,fix,docs,style,refactor,perf,test,build,ci,chore,revert,merge,release",
         ),
-        modes={k: env_mode(f"STD_MODE_{k.upper().replace('-', '_')}", v)
-               for k, v in RULE_DEFAULTS.items()},
+        modes={
+            k: env_mode(f"STD_MODE_{k.upper().replace('-', '_')}", v)
+            for k, v in RULE_DEFAULTS.items()
+        },
     )
 
 
@@ -237,7 +241,10 @@ def load_config() -> Config:
 # Shared helpers
 # --------------------------------------------------------------------------------------
 
-def run(args: Sequence[str], cwd: Path, check: bool = False) -> subprocess.CompletedProcess[str]:
+
+def run(
+    args: Sequence[str], cwd: Path, check: bool = False
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         list(args), cwd=str(cwd), capture_output=True, text=True, check=check
     )
@@ -247,8 +254,9 @@ def workflow_files(root: Path) -> list[Path]:
     wf = root / ".github" / "workflows"
     if not wf.is_dir():
         return []
-    return sorted(p for p in wf.iterdir()
-                  if p.is_file() and p.suffix in (".yml", ".yaml"))
+    return sorted(
+        p for p in wf.iterdir() if p.is_file() and p.suffix in (".yml", ".yaml")
+    )
 
 
 def rel(root: Path, p: Path) -> str:
@@ -271,8 +279,10 @@ def parse_workflow(path: Path) -> tuple[dict[str, Any] | None, str | None]:
         return _PARSE_CACHE[path]
     try:
         doc = yaml.safe_load(path.read_text(encoding="utf-8"))
-        out = (doc if isinstance(doc, dict) else None,
-               None if isinstance(doc, dict) else "top level is not a mapping")
+        out = (
+            doc if isinstance(doc, dict) else None,
+            None if isinstance(doc, dict) else "top level is not a mapping",
+        )
     except yaml.YAMLError as exc:
         out = (None, str(exc))
     except OSError as exc:
@@ -281,7 +291,9 @@ def parse_workflow(path: Path) -> tuple[dict[str, Any] | None, str | None]:
     return out
 
 
-def iter_steps(doc: dict[str, Any]) -> Iterable[tuple[str, dict[str, Any], dict[str, Any]]]:
+def iter_steps(
+    doc: dict[str, Any],
+) -> Iterable[tuple[str, dict[str, Any], dict[str, Any]]]:
     """Yield (job_id, job, step) for every step in a parsed workflow."""
     jobs = doc.get("jobs")
     if not isinstance(jobs, dict):
@@ -363,7 +375,9 @@ def rule_promote_merge_mode(cfg: Config) -> RuleResult:
     res = RuleResult()
     pr = cfg.pr
     if not pr:
-        res.checked.append("not a pull_request event — nothing to check (empty, not unknown)")
+        res.checked.append(
+            "not a pull_request event — nothing to check (empty, not unknown)"
+        )
         return res
     base = str(pr.get("base", {}).get("ref", ""))
     head = str(pr.get("head", {}).get("ref", ""))
@@ -375,41 +389,57 @@ def rule_promote_merge_mode(cfg: Config) -> RuleResult:
         )
         return res
 
-    res.checked.append(f"`{head}` -> `{base}` is the **{edge}** edge — merge commit required.")
+    res.checked.append(
+        f"`{head}` -> `{base}` is the **{edge}** edge — merge commit required."
+    )
 
     # (a) auto-merge armed with the wrong method is a machine that will do the damage.
     auto = pr.get("auto_merge")
     if isinstance(auto, dict):
         method = str(auto.get("merge_method", "")).upper()
         if method and method != "MERGE":
-            res.findings.append(Finding(
-                rule="promote-merge-mode",
-                title=f"auto-merge armed with {method} on the {edge} PR",
-                what=(f"This PR is `{head}` -> `{base}` (the {edge} edge) and auto-merge is "
-                      f"armed with merge_method={method}. When checks go green GitHub will "
-                      f"{method.lower()} it without a human in the loop."),
-                why=SQUASH_DAMAGE,
-                how=(f"gh pr merge {pr.get('number')} --disable-auto\n"
-                     f"gh pr merge {pr.get('number')} --merge --auto   # re-arm with a merge commit"),
-            ))
+            res.findings.append(
+                Finding(
+                    rule="promote-merge-mode",
+                    title=f"auto-merge armed with {method} on the {edge} PR",
+                    what=(
+                        f"This PR is `{head}` -> `{base}` (the {edge} edge) and auto-merge is "
+                        f"armed with merge_method={method}. When checks go green GitHub will "
+                        f"{method.lower()} it without a human in the loop."
+                    ),
+                    why=SQUASH_DAMAGE,
+                    how=(
+                        f"gh pr merge {pr.get('number')} --disable-auto\n"
+                        f"gh pr merge {pr.get('number')} --merge --auto   # re-arm with a merge commit"
+                    ),
+                )
+            )
         else:
             res.checked.append("auto-merge is armed with a merge commit — correct.")
 
     # (b) if the repo forbids merge commits, the correct button does not exist.
     data, err = github_api(cfg, f"repos/{cfg.repo_slug}")
     if err is not None or not isinstance(data, dict):
-        res.findings.append(Finding(
-            rule="promote-merge-mode",
-            title="could not read repository merge settings",
-            what=(f"GET /repos/{cfg.repo_slug} failed: {err}. The checker cannot tell whether "
-                  "merge commits are allowed on this repo."),
-            why=("This is UNKNOWN, not empty. Contract 4a: a result the checker could not "
-                 "determine must fail loudly rather than pass quietly, because a gate that "
-                 "cannot measure is a gate that is off while looking on."),
-            how=("Give the workflow token `contents: read` on this repository, or pass a token "
-                 "with repo metadata read via the `token` secret of the reusable workflow."),
-            unknown=True,
-        ))
+        res.findings.append(
+            Finding(
+                rule="promote-merge-mode",
+                title="could not read repository merge settings",
+                what=(
+                    f"GET /repos/{cfg.repo_slug} failed: {err}. The checker cannot tell whether "
+                    "merge commits are allowed on this repo."
+                ),
+                why=(
+                    "This is UNKNOWN, not empty. Contract 4a: a result the checker could not "
+                    "determine must fail loudly rather than pass quietly, because a gate that "
+                    "cannot measure is a gate that is off while looking on."
+                ),
+                how=(
+                    "Give the workflow token `contents: read` on this repository, or pass a token "
+                    "with repo metadata read via the `token` secret of the reusable workflow."
+                ),
+                unknown=True,
+            )
+        )
         return res
 
     # A read-scoped token gets the repository object WITHOUT the `allow_*` merge fields.
@@ -420,7 +450,8 @@ def rule_promote_merge_mode(cfg: Config) -> RuleResult:
             "the workflow token cannot see this repo's merge-method settings (the `allow_*` "
             "fields are omitted for read-scoped tokens) — settings not asserted either way. "
             "Pass a token with repo admin read via the `token` secret to enable that half of "
-            "this rule.")
+            "this rule."
+        )
         allow_merge, allow_squash, allow_rebase = True, True, False
     else:
         allow_merge = bool(data.get("allow_merge_commit"))
@@ -431,57 +462,76 @@ def rule_promote_merge_mode(cfg: Config) -> RuleResult:
         )
 
     if not allow_merge:
-        res.findings.append(Finding(
-            rule="promote-merge-mode",
-            title="merge commits are disabled — this PR cannot be merged correctly",
-            what=(f"`{cfg.repo_slug}` has allow_merge_commit=false, so the only buttons on this "
-                  f"{edge} PR are squash and/or rebase. Both rewrite the commit."),
-            why=SQUASH_DAMAGE,
-            how=(f"The operator must run:\n"
-                 f"  gh api -X PATCH repos/{cfg.repo_slug} -F allow_merge_commit=true\n"
-                 "This check does not change repository settings itself."),
-        ))
+        res.findings.append(
+            Finding(
+                rule="promote-merge-mode",
+                title="merge commits are disabled — this PR cannot be merged correctly",
+                what=(
+                    f"`{cfg.repo_slug}` has allow_merge_commit=false, so the only buttons on this "
+                    f"{edge} PR are squash and/or rebase. Both rewrite the commit."
+                ),
+                why=SQUASH_DAMAGE,
+                how=(
+                    f"The operator must run:\n"
+                    f"  gh api -X PATCH repos/{cfg.repo_slug} -F allow_merge_commit=true\n"
+                    "This check does not change repository settings itself."
+                ),
+            )
+        )
 
     if allow_rebase:
-        res.findings.append(Finding(
-            rule="promote-merge-mode",
-            title="rebase merging is enabled and also breaks the ancestry link",
-            what=(f"`{cfg.repo_slug}` has allow_rebase_merge=true. Rebase replays `dev`'s commits "
-                  f"onto `{cfg.release_branch}` as new objects — the same disjoint-history outcome "
-                  "as squash, reached a different way."),
-            why=SQUASH_DAMAGE,
-            how=(f"gh api -X PATCH repos/{cfg.repo_slug} -F allow_rebase_merge=false\n"
-                 "Squash stays enabled: it is the correct mode for work-branch -> dev."),
-        ))
+        res.findings.append(
+            Finding(
+                rule="promote-merge-mode",
+                title="rebase merging is enabled and also breaks the ancestry link",
+                what=(
+                    f"`{cfg.repo_slug}` has allow_rebase_merge=true. Rebase replays `dev`'s commits "
+                    f"onto `{cfg.release_branch}` as new objects — the same disjoint-history outcome "
+                    "as squash, reached a different way."
+                ),
+                why=SQUASH_DAMAGE,
+                how=(
+                    f"gh api -X PATCH repos/{cfg.repo_slug} -F allow_rebase_merge=false\n"
+                    "Squash stays enabled: it is the correct mode for work-branch -> dev."
+                ),
+            )
+        )
 
     # Teaching notice, always, on every ancestry-critical PR.
-    res.findings.append(Finding(
-        rule="promote-merge-mode",
-        title=f"merge this {edge} with a MERGE COMMIT",
-        what=(f"`{head}` -> `{base}` must land as a merge commit. Whether the wrong button even "
-              f"exists depends on the ruleset covering `{base}`: a `pull_request` rule with "
-              "`allowed_merge_methods: [\"merge\"]` removes squash and rebase for this branch "
-              "only, leaving squash available on the work-branch edge. Until that is set, the "
-              "button choice is the only thing standing between the fleet and a disjoint "
-              "history."),
-        why=SQUASH_DAMAGE,
-        how=(f"gh pr merge {pr.get('number')} --merge\n"
-             "or press \"Create a merge commit\" — NOT \"Squash and merge\".\n"
-             "Better, once, by the operator — make the wrong button impossible:\n"
-             "  gh api repos/OWNER/REPO/rulesets --jq '.[] | \"\\(.id) \\(.name)\"'\n"
-             "  # then PUT the default-branch ruleset's pull_request rule with\n"
-             "  #   \"allowed_merge_methods\": [\"merge\"]\n"
-             "  # (PUT, not PATCH — PATCH returns 404 and reads like a permissions error)"),
-        # Informational by construction: this fires on every correct promote too, and a
-        # rule that fails the PR it is only teaching would get switched off.
-        cap=NOTICE,
-    ))
+    res.findings.append(
+        Finding(
+            rule="promote-merge-mode",
+            title=f"merge this {edge} with a MERGE COMMIT",
+            what=(
+                f"`{head}` -> `{base}` must land as a merge commit. Whether the wrong button even "
+                f"exists depends on the ruleset covering `{base}`: a `pull_request` rule with "
+                '`allowed_merge_methods: ["merge"]` removes squash and rebase for this branch '
+                "only, leaving squash available on the work-branch edge. Until that is set, the "
+                "button choice is the only thing standing between the fleet and a disjoint "
+                "history."
+            ),
+            why=SQUASH_DAMAGE,
+            how=(
+                f"gh pr merge {pr.get('number')} --merge\n"
+                'or press "Create a merge commit" — NOT "Squash and merge".\n'
+                "Better, once, by the operator — make the wrong button impossible:\n"
+                "  gh api repos/OWNER/REPO/rulesets --jq '.[] | \"\\(.id) \\(.name)\"'\n"
+                "  # then PUT the default-branch ruleset's pull_request rule with\n"
+                '  #   "allowed_merge_methods": ["merge"]\n'
+                "  # (PUT, not PATCH — PATCH returns 404 and reads like a permissions error)"
+            ),
+            # Informational by construction: this fires on every correct promote too, and a
+            # rule that fails the PR it is only teaching would get switched off.
+            cap=NOTICE,
+        )
+    )
     return res
 
 
 # --------------------------------------------------------------------------------------
 # Rule 2 — branch targeting
 # --------------------------------------------------------------------------------------
+
 
 def rule_branch_targeting(cfg: Config) -> RuleResult:
     res = RuleResult()
@@ -493,66 +543,89 @@ def rule_branch_targeting(cfg: Config) -> RuleResult:
     head = str(pr.get("head", {}).get("ref", ""))
 
     if base not in cfg.trunk_branches:
-        res.checked.append(f"base `{base}` is not a trunk branch — stacked PR, allowed.")
+        res.checked.append(
+            f"base `{base}` is not a trunk branch — stacked PR, allowed."
+        )
         return res
     if base == cfg.integration_branch:
         res.checked.append(f"base `{base}` is the integration branch — correct target.")
         return res
     if base != cfg.release_branch:
-        res.checked.append(f"base `{base}` is a trunk branch other than "
-                           f"`{cfg.release_branch}` — not governed by this rule.")
+        res.checked.append(
+            f"base `{base}` is a trunk branch other than "
+            f"`{cfg.release_branch}` — not governed by this rule."
+        )
         return res
 
     labels = cfg.pr_labels
     exempt_labels = {"hotfix", "promote", "release"}
     if labels & exempt_labels:
         res.checked.append(
-            f"base `{base}` allowed by label {sorted(labels & exempt_labels)}.")
+            f"base `{base}` allowed by label {sorted(labels & exempt_labels)}."
+        )
         return res
     if matches_any(head, cfg.main_allowed_heads):
-        res.checked.append(f"head `{head}` matches an explicitly allowed pattern for "
-                           f"`{cfg.release_branch}`.")
+        res.checked.append(
+            f"head `{head}` matches an explicitly allowed pattern for "
+            f"`{cfg.release_branch}`."
+        )
         return res
 
     # A repo with no integration branch has nowhere else for this PR to go. Failing it
     # would be a rule demanding a target that does not exist — red for a reason nobody
     # can act on, which is how red stops meaning anything. Contract 4a: empty is a real
     # answer. `git ls-remote` failing outright is UNKNOWN and still fails.
-    ls = run(["git", "ls-remote", "--heads", "origin",
-              cfg.integration_branch], cfg.repo_root)
+    ls = run(
+        ["git", "ls-remote", "--heads", "origin", cfg.integration_branch], cfg.repo_root
+    )
     if ls.returncode not in (0, 2):
-        res.findings.append(Finding(
-            rule="branch-targeting", title="could not tell whether the integration branch exists",
-            what=(f"`git ls-remote --heads origin {cfg.integration_branch}` failed:\n"
-                  f"{ls.stderr.strip()}"),
-            why="UNKNOWN, not empty — the checker cannot say whether this PR had a valid target.",
-            how="Ensure the job can reach origin (checkout with credentials, `contents: read`).",
-            unknown=True))
+        res.findings.append(
+            Finding(
+                rule="branch-targeting",
+                title="could not tell whether the integration branch exists",
+                what=(
+                    f"`git ls-remote --heads origin {cfg.integration_branch}` failed:\n"
+                    f"{ls.stderr.strip()}"
+                ),
+                why="UNKNOWN, not empty — the checker cannot say whether this PR had a valid target.",
+                how="Ensure the job can reach origin (checkout with credentials, `contents: read`).",
+                unknown=True,
+            )
+        )
         return res
     if not ls.stdout.strip():
         res.checked.append(
             f"`{cfg.integration_branch}` does not exist on origin, so `{cfg.release_branch}` is "
             f"the only trunk — nothing to enforce (empty, not unknown). Create "
             f"`{cfg.integration_branch}` or set `integration-branch` if this repo integrates "
-            "somewhere else.")
+            "somewhere else."
+        )
         return res
 
-    res.findings.append(Finding(
-        rule="branch-targeting",
-        title=f"feature work must target `{cfg.integration_branch}`, not `{cfg.release_branch}`",
-        what=(f"This PR is `{head}` -> `{base}`. Allowed heads for `{cfg.release_branch}` are "
-              f"{cfg.main_allowed_heads} (or a `hotfix`/`promote`/`release` label). "
-              f"`{head}` matches none of them."),
-        why=("A repo where some PRs target `dev` and others target `main` has no integration "
-             "point: two changes that conflict never meet until one is already on `main`, and "
-             "the conflict surfaces at the worst possible moment. Measured across the six "
-             "priority repos, PRs were split across both targets and 14 of 48 were already "
-             "DIRTY — conflicting badly enough that GitHub could not build a merge ref, which "
-             "is also why they reported zero CI checks. Contract 1."),
-        how=(f"gh pr edit {pr.get('number')} --base {cfg.integration_branch}\n"
-             f"If this really is a hotfix or a promote, say so explicitly rather than by "
-             f"omission:  gh pr edit {pr.get('number')} --add-label hotfix"),
-    ))
+    res.findings.append(
+        Finding(
+            rule="branch-targeting",
+            title=f"feature work must target `{cfg.integration_branch}`, not `{cfg.release_branch}`",
+            what=(
+                f"This PR is `{head}` -> `{base}`. Allowed heads for `{cfg.release_branch}` are "
+                f"{cfg.main_allowed_heads} (or a `hotfix`/`promote`/`release` label). "
+                f"`{head}` matches none of them."
+            ),
+            why=(
+                "A repo where some PRs target `dev` and others target `main` has no integration "
+                "point: two changes that conflict never meet until one is already on `main`, and "
+                "the conflict surfaces at the worst possible moment. Measured across the six "
+                "priority repos, PRs were split across both targets and 14 of 48 were already "
+                "DIRTY — conflicting badly enough that GitHub could not build a merge ref, which "
+                "is also why they reported zero CI checks. Contract 1."
+            ),
+            how=(
+                f"gh pr edit {pr.get('number')} --base {cfg.integration_branch}\n"
+                f"If this really is a hotfix or a promote, say so explicitly rather than by "
+                f"omission:  gh pr edit {pr.get('number')} --add-label hotfix"
+            ),
+        )
+    )
     return res
 
 
@@ -561,7 +634,10 @@ def rule_branch_targeting(cfg: Config) -> RuleResult:
 # --------------------------------------------------------------------------------------
 
 FORCE_PATTERNS = [
-    (re.compile(r"git\s+push\b[^\n#]*\s(--force-with-lease\b|--force\b|-f\b)"), "force-push"),
+    (
+        re.compile(r"git\s+push\b[^\n#]*\s(--force-with-lease\b|--force\b|-f\b)"),
+        "force-push",
+    ),
     (re.compile(r"git\s+reset\s+--hard\b"), "hard reset"),
     (re.compile(r"git\s+push\b[^\n#]*\s--delete\b"), "branch delete"),
     (re.compile(r"git\s+push\b[^\n#]*\s:\S"), "refspec delete (`push origin :branch`)"),
@@ -582,18 +658,25 @@ def rule_protected_refs(cfg: Config) -> RuleResult:
     if not files:
         res.checked.append("no workflow files — nothing to scan (empty, not unknown)")
         return res
-    res.checked.append(f"scanned {len(files)} workflow file(s) for destructive git on "
-                       f"{sorted(trunk_tokens)}")
+    res.checked.append(
+        f"scanned {len(files)} workflow file(s) for destructive git on "
+        f"{sorted(trunk_tokens)}"
+    )
 
     for path in files:
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
         except OSError as exc:
-            res.findings.append(Finding(
-                rule="protected-refs", title="workflow unreadable",
-                what=f"{rel(cfg.repo_root, path)}: {exc}",
-                why="An unreadable workflow is UNKNOWN, not clean.",
-                how="Fix file permissions or encoding.", unknown=True))
+            res.findings.append(
+                Finding(
+                    rule="protected-refs",
+                    title="workflow unreadable",
+                    what=f"{rel(cfg.repo_root, path)}: {exc}",
+                    why="An unreadable workflow is UNKNOWN, not clean.",
+                    how="Fix file permissions or encoding.",
+                    unknown=True,
+                )
+            )
             continue
         for i, ln in enumerate(lines, start=1):
             if ALLOW_MARK in ln:
@@ -607,30 +690,43 @@ def rule_protected_refs(cfg: Config) -> RuleResult:
                 bare = kind == "force-push" and not re.search(r"\borigin\s+\S", ln)
                 if not (hits_trunk or bare):
                     continue
-                res.findings.append(Finding(
-                    rule="protected-refs",
-                    title=f"{kind} touching the protected trunk set",
-                    what=(f"{rel(cfg.repo_root, path)}:{i} contains a {kind} that reaches the "
-                          f"trunk set ({', '.join(sorted(trunk_tokens))}):\n    {ln.strip()}"
-                          + ("\n  (no explicit remote/refspec — this pushes whatever branch the "
-                             "job is on, which on a trunk trigger is a trunk branch)"
-                             if bare and not hits_trunk else "")),
-                    why=("`main`, `dev`, `sec` and `release/**` must never be deleted or "
-                         "force-pushed. Contract 1: back-merges are \"merge, never reset or "
-                         "force\" — a force-push to a trunk discards the ancestry other "
-                         "branches are measured against, which is the same disjoint-history "
-                         "failure as a squashed promote but with no PR to review it."),
-                    how=("Push to a work branch and open a PR instead. If this line genuinely "
-                         "targets a disposable branch, make the refspec explicit and add a "
-                         f"`# {ALLOW_MARK}: protected-refs — <reason>` comment on the same line."),
-                    file=rel(cfg.repo_root, path), line=i,
-                ))
+                res.findings.append(
+                    Finding(
+                        rule="protected-refs",
+                        title=f"{kind} touching the protected trunk set",
+                        what=(
+                            f"{rel(cfg.repo_root, path)}:{i} contains a {kind} that reaches the "
+                            f"trunk set ({', '.join(sorted(trunk_tokens))}):\n    {ln.strip()}"
+                            + (
+                                "\n  (no explicit remote/refspec — this pushes whatever branch the "
+                                "job is on, which on a trunk trigger is a trunk branch)"
+                                if bare and not hits_trunk
+                                else ""
+                            )
+                        ),
+                        why=(
+                            "`main`, `dev`, `sec` and `release/**` must never be deleted or "
+                            'force-pushed. Contract 1: back-merges are "merge, never reset or '
+                            'force" — a force-push to a trunk discards the ancestry other '
+                            "branches are measured against, which is the same disjoint-history "
+                            "failure as a squashed promote but with no PR to review it."
+                        ),
+                        how=(
+                            "Push to a work branch and open a PR instead. If this line genuinely "
+                            "targets a disposable branch, make the refspec explicit and add a "
+                            f"`# {ALLOW_MARK}: protected-refs — <reason>` comment on the same line."
+                        ),
+                        file=rel(cfg.repo_root, path),
+                        line=i,
+                    )
+                )
     return res
 
 
 # --------------------------------------------------------------------------------------
 # Rules 4 — versioning
 # --------------------------------------------------------------------------------------
+
 
 def _toml_load(path: Path) -> dict[str, Any] | None:
     if tomllib is not None:
@@ -738,9 +834,13 @@ def rule_version_policy(cfg: Config) -> RuleResult:
     res = RuleResult()
     versions, broken = collect_versions(cfg.repo_root)
     if not versions:
-        res.checked.append("no version manifest found — nothing to check (empty, not unknown)")
+        res.checked.append(
+            "no version manifest found — nothing to check (empty, not unknown)"
+        )
         return res
-    res.checked.append("versions: " + ", ".join(f"{k}={v}" for k, v in sorted(versions.items())))
+    res.checked.append(
+        "versions: " + ", ".join(f"{k}={v}" for k, v in sorted(versions.items()))
+    )
 
     authorized = cfg.one_x_label in cfg.pr_labels
     for src, raw in sorted(versions.items()):
@@ -748,32 +848,48 @@ def rule_version_policy(cfg: Config) -> RuleResult:
         if sv is None:
             continue
         if sv[0] >= 1 and not authorized:
-            res.findings.append(Finding(
-                rule="version-policy",
-                title=f"{src} declares {raw} — 1.x requires explicit human authorization",
-                what=(f"`{src}` is at `{raw}` (major {sv[0]}) and the "
-                      f"`{cfg.one_x_label}` label is not present on this PR."),
-                why=("Operator policy, global, no exceptions: every repo stays 0.x.x under "
-                     "commitizen until a human explicitly authorizes a 1.x.x cut, and no agent "
-                     "may cut or propose one. Authorizing 1.x requires full production "
-                     "readiness, hardening, and a documented, met set of requirements, "
-                     "deliverables, success criteria and definition of done — captured, not "
-                     "asserted. Under `major_version_zero = true` the MINOR is the breaking "
-                     "position, so a breaking change is 0.1 -> 0.2, never a jump to 1.0. "
-                     "Contract 3."),
-                how=(f"Set `{src}` back to a 0.x version (`cz bump --increment MINOR` for a "
-                     "breaking change). If a human has genuinely authorized 1.x, they add the "
-                     f"label: gh pr edit <n> --add-label {cfg.one_x_label}"),
-                file=src,
-            ))
+            res.findings.append(
+                Finding(
+                    rule="version-policy",
+                    title=f"{src} declares {raw} — 1.x requires explicit human authorization",
+                    what=(
+                        f"`{src}` is at `{raw}` (major {sv[0]}) and the "
+                        f"`{cfg.one_x_label}` label is not present on this PR."
+                    ),
+                    why=(
+                        "Operator policy, global, no exceptions: every repo stays 0.x.x under "
+                        "commitizen until a human explicitly authorizes a 1.x.x cut, and no agent "
+                        "may cut or propose one. Authorizing 1.x requires full production "
+                        "readiness, hardening, and a documented, met set of requirements, "
+                        "deliverables, success criteria and definition of done — captured, not "
+                        "asserted. Under `major_version_zero = true` the MINOR is the breaking "
+                        "position, so a breaking change is 0.1 -> 0.2, never a jump to 1.0. "
+                        "Contract 3."
+                    ),
+                    how=(
+                        f"Set `{src}` back to a 0.x version (`cz bump --increment MINOR` for a "
+                        "breaking change). If a human has genuinely authorized 1.x, they add the "
+                        f"label: gh pr edit <n> --add-label {cfg.one_x_label}"
+                    ),
+                    file=src,
+                )
+            )
     if authorized:
-        res.checked.append(f"`{cfg.one_x_label}` label present — 1.x gate opened by a human.")
+        res.checked.append(
+            f"`{cfg.one_x_label}` label present — 1.x gate opened by a human."
+        )
     for src in broken:
-        res.findings.append(Finding(
-            rule="version-policy", title=f"{src} could not be parsed",
-            what=f"`{src}` exists but did not parse as valid TOML/JSON.",
-            why="An unparseable manifest is UNKNOWN — the checker cannot confirm the repo is 0.x.",
-            how=f"Fix the syntax in {src}.", file=src, unknown=True))
+        res.findings.append(
+            Finding(
+                rule="version-policy",
+                title=f"{src} could not be parsed",
+                what=f"`{src}` exists but did not parse as valid TOML/JSON.",
+                why="An unparseable manifest is UNKNOWN — the checker cannot confirm the repo is 0.x.",
+                how=f"Fix the syntax in {src}.",
+                file=src,
+                unknown=True,
+            )
+        )
     return res
 
 
@@ -784,26 +900,36 @@ def rule_version_drift(cfg: Config) -> RuleResult:
         res.checked.append("fewer than two version sources — nothing to cross-check")
         return res
     distinct = {v.lstrip("v") for v in versions.values()}
-    res.checked.append("versions: " + ", ".join(f"{k}={v}" for k, v in sorted(versions.items())))
+    res.checked.append(
+        "versions: " + ", ".join(f"{k}={v}" for k, v in sorted(versions.items()))
+    )
     if len(distinct) == 1:
         return res
-    res.findings.append(Finding(
-        rule="version-drift",
-        title="version sources disagree",
-        what=("This repo declares more than one version:\n"
-              + "\n".join(f"    {k} = {v}" for k, v in sorted(versions.items()))),
-        why=("Three sources with three answers is how a release ends up misrepresenting what it "
-             "is. Measured in this fleet: one repo carried Cargo.toml 1.0.0, README 0.1 and tag "
-             "v1.0.1 simultaneously. Contract 4: every release must carry correct semver and a "
-             "changelog derived from it — which is impossible when the number itself is "
-             "ambiguous, and a version that claims maturity the code has not earned transfers "
-             "risk to whoever trusts it."),
-        how=("Make `.cz.toml` the single source and list every other file in `version_files`, "
-             "then re-bump so commitizen rewrites them together:\n"
-             "    [tool.commitizen]\n"
-             "    version_files = [\"VERSION\", \"Cargo.toml:^version\"]\n"
-             "    cz bump --yes"),
-    ))
+    res.findings.append(
+        Finding(
+            rule="version-drift",
+            title="version sources disagree",
+            what=(
+                "This repo declares more than one version:\n"
+                + "\n".join(f"    {k} = {v}" for k, v in sorted(versions.items()))
+            ),
+            why=(
+                "Three sources with three answers is how a release ends up misrepresenting what it "
+                "is. Measured in this fleet: one repo carried Cargo.toml 1.0.0, README 0.1 and tag "
+                "v1.0.1 simultaneously. Contract 4: every release must carry correct semver and a "
+                "changelog derived from it — which is impossible when the number itself is "
+                "ambiguous, and a version that claims maturity the code has not earned transfers "
+                "risk to whoever trusts it."
+            ),
+            how=(
+                "Make `.cz.toml` the single source and list every other file in `version_files`, "
+                "then re-bump so commitizen rewrites them together:\n"
+                "    [tool.commitizen]\n"
+                '    version_files = ["VERSION", "Cargo.toml:^version"]\n'
+                "    cz bump --yes"
+            ),
+        )
+    )
     return res
 
 
@@ -812,10 +938,38 @@ def rule_version_drift(cfg: Config) -> RuleResult:
 # --------------------------------------------------------------------------------------
 
 GATE_TOKENS = (
-    "cargo", "clippy", "rustfmt", "pytest", "ruff", "mypy", "pyright", "bandit", "semgrep",
-    "gitleaks", "trufflehog", "trivy", "grype", "syft", "audit", "geiger", "cargo-deny",
-    "deny check", "npm test", "yarn test", "pnpm test", "eslint", "shellcheck", "actionlint",
-    "go test", "go vet", "codeql", "safety", "pip-audit", "osv-scanner", "hadolint", "yamllint",
+    "cargo",
+    "clippy",
+    "rustfmt",
+    "pytest",
+    "ruff",
+    "mypy",
+    "pyright",
+    "bandit",
+    "semgrep",
+    "gitleaks",
+    "trufflehog",
+    "trivy",
+    "grype",
+    "syft",
+    "audit",
+    "geiger",
+    "cargo-deny",
+    "deny check",
+    "npm test",
+    "yarn test",
+    "pnpm test",
+    "eslint",
+    "shellcheck",
+    "actionlint",
+    "go test",
+    "go vet",
+    "codeql",
+    "safety",
+    "pip-audit",
+    "osv-scanner",
+    "hadolint",
+    "yamllint",
 )
 
 # The binaries whose exit status IS the gate. Matched against the FIRST word of the
@@ -827,15 +981,52 @@ GATE_TOKENS = (
 # that cries wolf about setup lines is a check people mute, and then it is not catching
 # the swallowed `cargo geiger` either.
 GATE_BINARIES = (
-    "cargo", "clippy-driver", "pytest", "ruff", "mypy", "pyright", "bandit", "semgrep",
-    "gitleaks", "trufflehog", "trivy", "grype", "syft", "eslint", "shellcheck", "actionlint",
-    "codeql", "safety", "pip-audit", "osv-scanner", "hadolint", "yamllint", "cargo-geiger",
-    "cargo-deny", "cargo-audit", "tox", "nox", "pylint", "flake8", "black", "isort",
+    "cargo",
+    "clippy-driver",
+    "pytest",
+    "ruff",
+    "mypy",
+    "pyright",
+    "bandit",
+    "semgrep",
+    "gitleaks",
+    "trufflehog",
+    "trivy",
+    "grype",
+    "syft",
+    "eslint",
+    "shellcheck",
+    "actionlint",
+    "codeql",
+    "safety",
+    "pip-audit",
+    "osv-scanner",
+    "hadolint",
+    "yamllint",
+    "cargo-geiger",
+    "cargo-deny",
+    "cargo-audit",
+    "tox",
+    "nox",
+    "pylint",
+    "flake8",
+    "black",
+    "isort",
 )
 # Multi-word invocations: the gate is the tool these run, not the launcher.
 GATE_PHRASES = (
-    "uv run", "poetry run", "pipenv run", "python -m", "python3 -m", "npm test", "npm run",
-    "yarn test", "pnpm test", "go test", "go vet", "npx",
+    "uv run",
+    "poetry run",
+    "pipenv run",
+    "python -m",
+    "python3 -m",
+    "npm test",
+    "npm run",
+    "yarn test",
+    "pnpm test",
+    "go test",
+    "go vet",
+    "npx",
 )
 SOFT_FAIL_RX = re.compile(r"\|\|\s*(true\b|:\s*$|:\s|exit\s+0\b|echo\b)")
 _SUBST_RX = re.compile(r"\$\([^)]*\)|`[^`]*`")
@@ -867,7 +1058,7 @@ def _swallowed_gate(line: str) -> str | None:
     three = " ".join(words[:3])
     for phrase in GATE_PHRASES:
         if two.startswith(phrase) or three.startswith(phrase):
-            tail = segment[len(phrase):].strip().split()
+            tail = segment[len(phrase) :].strip().split()
             if tail and tail[0].rsplit("/", 1)[-1] in GATE_BINARIES:
                 return segment
             if any(t in segment for t in ("test", "lint", "audit", "check")):
@@ -921,7 +1112,9 @@ def rule_exit_contract(cfg: Config) -> RuleResult:
     if not files:
         res.checked.append("no workflow files — nothing to check")
         return res
-    res.checked.append(f"inspected {len(files)} workflow file(s) for gates that cannot go red")
+    res.checked.append(
+        f"inspected {len(files)} workflow file(s) for gates that cannot go red"
+    )
 
     for path in files:
         doc, err = parse_workflow(path)
@@ -935,31 +1128,45 @@ def rule_exit_contract(cfg: Config) -> RuleResult:
                 continue
             jname = str(job.get("name") or job_id)
             if job.get("continue-on-error") is True and _is_gatelike(jname, job_id):
-                res.findings.append(Finding(
-                    rule="exit-contract",
-                    title=f"job `{jname}` is a gate with continue-on-error: true",
-                    what=(f"{fname}: job `{job_id}` has `continue-on-error: true` at job level, "
-                          "so every failure inside it reports green."),
-                    why=EXIT_WHY, how=EXIT_HOW,
-                    file=fname, line=find_line(path, "continue-on-error"),
-                ))
+                res.findings.append(
+                    Finding(
+                        rule="exit-contract",
+                        title=f"job `{jname}` is a gate with continue-on-error: true",
+                        what=(
+                            f"{fname}: job `{job_id}` has `continue-on-error: true` at job level, "
+                            "so every failure inside it reports green."
+                        ),
+                        why=EXIT_WHY,
+                        how=EXIT_HOW,
+                        file=fname,
+                        line=find_line(path, "continue-on-error"),
+                    )
+                )
         for job_id, job, step in iter_steps(doc):
             sname = str(step.get("name") or step.get("uses") or "")
             script = step.get("run") if isinstance(step.get("run"), str) else ""
             if ALLOW_MARK in (script or "") or ALLOW_MARK in sname:
                 continue
-            gatelike = _is_gatelike(sname, script, step.get("uses"), job.get("name"), job_id)
+            gatelike = _is_gatelike(
+                sname, script, step.get("uses"), job.get("name"), job_id
+            )
             advisory = "(advisory)" in sname.lower()
             if step.get("continue-on-error") is True and gatelike and not advisory:
-                res.findings.append(Finding(
-                    rule="exit-contract",
-                    title=f"gate step `{sname or job_id}` has continue-on-error: true",
-                    what=(f"{fname}: step `{sname or '(unnamed)'}` in job `{job_id}` is a "
-                          "security/lint/test step marked `continue-on-error: true`. If the tool "
-                          "fails to build or crashes, the job still reports GREEN."),
-                    why=EXIT_WHY, how=EXIT_HOW,
-                    file=fname, line=find_line(path, sname) if sname else None,
-                ))
+                res.findings.append(
+                    Finding(
+                        rule="exit-contract",
+                        title=f"gate step `{sname or job_id}` has continue-on-error: true",
+                        what=(
+                            f"{fname}: step `{sname or '(unnamed)'}` in job `{job_id}` is a "
+                            "security/lint/test step marked `continue-on-error: true`. If the tool "
+                            "fails to build or crashes, the job still reports GREEN."
+                        ),
+                        why=EXIT_WHY,
+                        how=EXIT_HOW,
+                        file=fname,
+                        line=find_line(path, sname) if sname else None,
+                    )
+                )
             if script:
                 for off, ln in logical_lines(script):
                     if ALLOW_MARK in ln:
@@ -967,23 +1174,29 @@ def rule_exit_contract(cfg: Config) -> RuleResult:
                     gate_cmd = _swallowed_gate(ln)
                     if gate_cmd is None:
                         continue
-                    res.findings.append(Finding(
-                        rule="exit-contract",
-                        title="gate command swallows its own failure",
-                        what=(f"{fname}: job `{job_id}`, step `{sname or '(unnamed)'}` line "
-                              f"{off} of the script:\n    {ln.strip()}\n"
-                              f"`{gate_cmd}` is the command the `||` tail binds to, so its "
-                              "failure — including 'the tool would not run' — exits 0."),
-                        why=EXIT_WHY, how=EXIT_HOW,
-                        file=fname, line=find_line(path, ln.strip()) if ln.strip() else None,
-                    ))
+                    res.findings.append(
+                        Finding(
+                            rule="exit-contract",
+                            title="gate command swallows its own failure",
+                            what=(
+                                f"{fname}: job `{job_id}`, step `{sname or '(unnamed)'}` line "
+                                f"{off} of the script:\n    {ln.strip()}\n"
+                                f"`{gate_cmd}` is the command the `||` tail binds to, so its "
+                                "failure — including 'the tool would not run' — exits 0."
+                            ),
+                            why=EXIT_WHY,
+                            how=EXIT_HOW,
+                            file=fname,
+                            line=find_line(path, ln.strip()) if ln.strip() else None,
+                        )
+                    )
     return res
 
 
 EXIT_WHY = (
     "This is a gate that is switched off while still looking on. Measured: qlora-rs #27 runs "
     "`cargo install cargo-geiger` with continue-on-error and then the scan itself with "
-    "`|| true`, so \"the tool could not build\" reports GREEN and the unsafe-code scan has not "
+    '`|| true`, so "the tool could not build" reports GREEN and the unsafe-code scan has not '
     "run in months without anyone seeing red. Contract 4a: a skipped or swallowed required "
     "check is not a passing check."
 )
@@ -1025,30 +1238,40 @@ def rule_yaml_validity(cfg: Config) -> RuleResult:
                 raw = path.read_text(encoding="utf-8")
             except OSError:
                 raw = ""
-            if re.search(r"^\s*\S+.*<<-?\s*['\"]?\w", raw, re.M) and re.search(r"^\w+$", raw, re.M):
-                hint = ("\nLikely cause: a heredoc body or terminator written at COLUMN 0. A "
-                        "line at column 0 dedents out of the enclosing `run: |` block scalar and "
-                        "terminates it, so the rest of the script is parsed as YAML.")
-            res.findings.append(Finding(
-                rule="yaml-validity",
-                title="workflow does not parse",
-                what=f"{fname} failed yaml.safe_load:\n{err}{hint}",
-                why=("A workflow that does not parse never runs. It reports `startup_failure`, "
-                     "not a failed job — no steps, no logs, and nothing that looks like a broken "
-                     "gate. Measured: exactly this `python3 <<'PY'` at column 0 broke "
-                     "`reopen-issues-closed-off-main.yml` in 15 OF 22 repos in this fleet, and "
-                     "the workflow appeared merely 'red for no reason' for weeks. Contract 4a."),
-                how=("Indent the whole heredoc — opener, body and terminator — to the block "
-                     "scalar's indentation. Everything inside `run: |` must be indented past the "
-                     "`run:` key:\n"
-                     "    - run: |\n"
-                     "        python3 - <<'PY'\n"
-                     "        print('hi')\n"
-                     "        PY\n"
-                     "Verify locally: python3 -c \"import yaml,sys;"
-                     "yaml.safe_load(open(sys.argv[1]))\" " + fname),
-                file=fname,
-            ))
+            if re.search(r"^\s*\S+.*<<-?\s*['\"]?\w", raw, re.M) and re.search(
+                r"^\w+$", raw, re.M
+            ):
+                hint = (
+                    "\nLikely cause: a heredoc body or terminator written at COLUMN 0. A "
+                    "line at column 0 dedents out of the enclosing `run: |` block scalar and "
+                    "terminates it, so the rest of the script is parsed as YAML."
+                )
+            res.findings.append(
+                Finding(
+                    rule="yaml-validity",
+                    title="workflow does not parse",
+                    what=f"{fname} failed yaml.safe_load:\n{err}{hint}",
+                    why=(
+                        "A workflow that does not parse never runs. It reports `startup_failure`, "
+                        "not a failed job — no steps, no logs, and nothing that looks like a broken "
+                        "gate. Measured: exactly this `python3 <<'PY'` at column 0 broke "
+                        "`reopen-issues-closed-off-main.yml` in 15 OF 22 repos in this fleet, and "
+                        "the workflow appeared merely 'red for no reason' for weeks. Contract 4a."
+                    ),
+                    how=(
+                        "Indent the whole heredoc — opener, body and terminator — to the block "
+                        "scalar's indentation. Everything inside `run: |` must be indented past the "
+                        "`run:` key:\n"
+                        "    - run: |\n"
+                        "        python3 - <<'PY'\n"
+                        "        print('hi')\n"
+                        "        PY\n"
+                        'Verify locally: python3 -c "import yaml,sys;'
+                        'yaml.safe_load(open(sys.argv[1]))" ' + fname
+                    ),
+                    file=fname,
+                )
+            )
             continue
 
         # A file can parse and still have a truncated script: an unterminated heredoc.
@@ -1062,30 +1285,42 @@ def rule_yaml_validity(cfg: Config) -> RuleResult:
                 if not m:
                     continue
                 tag = m.group(1)
-                if any(re.fullmatch(rf"\s*{re.escape(tag)}\s*", later)
-                       for later in lines[i + 1:]):
+                if any(
+                    re.fullmatch(rf"\s*{re.escape(tag)}\s*", later)
+                    for later in lines[i + 1 :]
+                ):
                     continue
-                res.findings.append(Finding(
-                    rule="yaml-validity",
-                    title=f"unterminated heredoc `{tag}`",
-                    what=(f"{fname}: job `{job_id}`, step "
-                          f"`{step.get('name') or step.get('uses') or '(unnamed)'}` opens a "
-                          f"heredoc `<<{tag}` that is never closed inside the `run` script."),
-                    why=("The terminator was almost certainly written at column 0, which dedents "
-                         "out of the `run: |` block scalar. The YAML then either fails to parse "
-                         "(permanent `startup_failure`) or silently truncates the script. This "
-                         "broke 15 of 22 repos in this fleet."),
-                    how=("Indent the terminator to the same level as the rest of the script "
-                         "inside `run: |`. YAML strips the common indentation, so the shell "
-                         "still sees it at column 0."),
-                    file=fname, line=find_line(path, ln.strip()),
-                ))
+                res.findings.append(
+                    Finding(
+                        rule="yaml-validity",
+                        title=f"unterminated heredoc `{tag}`",
+                        what=(
+                            f"{fname}: job `{job_id}`, step "
+                            f"`{step.get('name') or step.get('uses') or '(unnamed)'}` opens a "
+                            f"heredoc `<<{tag}` that is never closed inside the `run` script."
+                        ),
+                        why=(
+                            "The terminator was almost certainly written at column 0, which dedents "
+                            "out of the `run: |` block scalar. The YAML then either fails to parse "
+                            "(permanent `startup_failure`) or silently truncates the script. This "
+                            "broke 15 of 22 repos in this fleet."
+                        ),
+                        how=(
+                            "Indent the terminator to the same level as the rest of the script "
+                            "inside `run: |`. YAML strips the common indentation, so the shell "
+                            "still sees it at column 0."
+                        ),
+                        file=fname,
+                        line=find_line(path, ln.strip()),
+                    )
+                )
     return res
 
 
 # --------------------------------------------------------------------------------------
 # Rule 7 — scheduled + cancel-in-progress
 # --------------------------------------------------------------------------------------
+
 
 def rule_schedule_cancel(cfg: Config) -> RuleResult:
     res = RuleResult()
@@ -1098,7 +1333,9 @@ def rule_schedule_cancel(cfg: Config) -> RuleResult:
         doc, _ = parse_workflow(path)
         if doc is None:
             continue
-        on = doc.get("on") if "on" in doc else doc.get(True)  # YAML 1.1 turns `on:` into True
+        on = (
+            doc.get("on") if "on" in doc else doc.get(True)
+        )  # YAML 1.1 turns `on:` into True
         scheduled = isinstance(on, dict) and "schedule" in on
         if not scheduled:
             continue
@@ -1115,24 +1352,36 @@ def rule_schedule_cancel(cfg: Config) -> RuleResult:
                     sites.append(f"job `{job_id}` `concurrency`")
         if not sites:
             continue
-        res.findings.append(Finding(
-            rule="schedule-cancel",
-            title="scheduled workflow with cancel-in-progress: true",
-            what=(f"{fname} has an `on.schedule` trigger and `cancel-in-progress: true` at "
-                  + " and ".join(sites) + "."),
-            why=("On self-hosted runners a scheduled job queues when no runner is free. The next "
-                 "scheduled tick then CANCELS the queued run, and a cancelled run reports "
-                 "`cancelled` — not `failed`. Nothing alerts, no badge turns red, and the job "
-                 "silently never runs again. This is the worst class of failure the contract "
-                 "names: a gate that is off while looking on."),
-            how=("Exempt the schedule from cancellation rather than dropping concurrency:\n"
-                 "    concurrency:\n"
-                 "      group: ${{ github.workflow }}-${{ github.ref }}\n"
-                 "      cancel-in-progress: ${{ github.event_name != 'schedule' }}\n"
-                 "PR pushes still supersede each other; scheduled runs are left to finish."),
-            file=fname, line=find_line(path, "cancel-in-progress"),
-        ))
-    res.checked.append(f"{checked} scheduled workflow(s) checked for cancel-in-progress")
+        res.findings.append(
+            Finding(
+                rule="schedule-cancel",
+                title="scheduled workflow with cancel-in-progress: true",
+                what=(
+                    f"{fname} has an `on.schedule` trigger and `cancel-in-progress: true` at "
+                    + " and ".join(sites)
+                    + "."
+                ),
+                why=(
+                    "On self-hosted runners a scheduled job queues when no runner is free. The next "
+                    "scheduled tick then CANCELS the queued run, and a cancelled run reports "
+                    "`cancelled` — not `failed`. Nothing alerts, no badge turns red, and the job "
+                    "silently never runs again. This is the worst class of failure the contract "
+                    "names: a gate that is off while looking on."
+                ),
+                how=(
+                    "Exempt the schedule from cancellation rather than dropping concurrency:\n"
+                    "    concurrency:\n"
+                    "      group: ${{ github.workflow }}-${{ github.ref }}\n"
+                    "      cancel-in-progress: ${{ github.event_name != 'schedule' }}\n"
+                    "PR pushes still supersede each other; scheduled runs are left to finish."
+                ),
+                file=fname,
+                line=find_line(path, "cancel-in-progress"),
+            )
+        )
+    res.checked.append(
+        f"{checked} scheduled workflow(s) checked for cancel-in-progress"
+    )
     return res
 
 
@@ -1160,7 +1409,9 @@ def rule_python_floor(cfg: Config) -> RuleResult:
         res.checked.append("no workflow files — nothing to check")
         return res
     lo = cfg.python_min
-    res.checked.append(f"floor is {lo[0]}.{lo[1]}; scanned {len(files)} workflow file(s)")
+    res.checked.append(
+        f"floor is {lo[0]}.{lo[1]}; scanned {len(files)} workflow file(s)"
+    )
 
     for path in files:
         doc, _ = parse_workflow(path)
@@ -1174,18 +1425,25 @@ def rule_python_floor(cfg: Config) -> RuleResult:
             values = node if isinstance(node, list) else [node]
             for raw in values:
                 if isinstance(raw, float):
-                    res.findings.append(Finding(
-                        rule="python-floor",
-                        title="unquoted python version parsed as a float",
-                        what=(f"{fname}: `{keypath}` is the YAML float `{raw}`. Unquoted `3.10` "
-                              "becomes 3.1 — you asked for Python 3.10 and specified 3.1."),
-                        why=("A version that silently means something else is worse than a wrong "
-                             "version, because the workflow file reads correct. The runner "
-                             "resolves whatever 3.1x it can find, or fails with a message that "
-                             "does not mention quoting."),
-                        how=f"Quote it: `{key}: \"{raw}0\"`",
-                        file=fname, line=find_line(path, key),
-                    ))
+                    res.findings.append(
+                        Finding(
+                            rule="python-floor",
+                            title="unquoted python version parsed as a float",
+                            what=(
+                                f"{fname}: `{keypath}` is the YAML float `{raw}`. Unquoted `3.10` "
+                                "becomes 3.1 — you asked for Python 3.10 and specified 3.1."
+                            ),
+                            why=(
+                                "A version that silently means something else is worse than a wrong "
+                                "version, because the workflow file reads correct. The runner "
+                                "resolves whatever 3.1x it can find, or fails with a message that "
+                                "does not mention quoting."
+                            ),
+                            how=f'Quote it: `{key}: "{raw}0"`',
+                            file=fname,
+                            line=find_line(path, key),
+                        )
+                    )
                     continue
                 if not isinstance(raw, str):
                     continue
@@ -1195,24 +1453,32 @@ def rule_python_floor(cfg: Config) -> RuleResult:
                 ver = (int(m.group(1)), int(m.group(2)))
                 if ver >= lo:
                     continue
-                res.findings.append(Finding(
-                    rule="python-floor",
-                    title=f"Python {raw} is below the fleet floor {lo[0]}.{lo[1]}",
-                    what=f"{fname}: `{keypath}` requests Python `{raw}`.",
-                    why=("The fleet floor is 3.11 with 3.13 preferred. Below 3.11 there is no "
-                         "`tomllib`, no exception groups and no `Self` type, so shared fleet "
-                         "tooling either needs a compatibility shim per repo or breaks on the "
-                         "one matrix cell nobody looks at. Testing a version the fleet does not "
-                         "ship costs runner time and buys a guarantee nobody wants."),
-                    how=(f"Raise it to \"{lo[0]}.{lo[1]}\" or higher — \"3.13\" preferred."),
-                    file=fname, line=find_line(path, str(raw)),
-                ))
+                res.findings.append(
+                    Finding(
+                        rule="python-floor",
+                        title=f"Python {raw} is below the fleet floor {lo[0]}.{lo[1]}",
+                        what=f"{fname}: `{keypath}` requests Python `{raw}`.",
+                        why=(
+                            "The fleet floor is 3.11 with 3.13 preferred. Below 3.11 there is no "
+                            "`tomllib`, no exception groups and no `Self` type, so shared fleet "
+                            "tooling either needs a compatibility shim per repo or breaks on the "
+                            "one matrix cell nobody looks at. Testing a version the fleet does not "
+                            "ship costs runner time and buys a guarantee nobody wants."
+                        ),
+                        how=(
+                            f'Raise it to "{lo[0]}.{lo[1]}" or higher — "3.13" preferred.'
+                        ),
+                        file=fname,
+                        line=find_line(path, str(raw)),
+                    )
+                )
     return res
 
 
 # --------------------------------------------------------------------------------------
 # Rule 9 — conventional commits on PR titles
 # --------------------------------------------------------------------------------------
+
 
 def rule_conventional_title(cfg: Config) -> RuleResult:
     res = RuleResult()
@@ -1226,21 +1492,29 @@ def rule_conventional_title(cfg: Config) -> RuleResult:
     if rx.match(title) or re.match(r'^Revert ".+"$', title):
         res.checked.append(f"PR title is conventional: {title!r}")
         return res
-    res.findings.append(Finding(
-        rule="conventional-title",
-        title="PR title is not a conventional commit",
-        what=(f"Title: {title!r}\nExpected `type(scope)?: subject` where type is one of: "
-              f"{', '.join(cfg.commit_types)}."),
-        why=("Squash-merging a PR into `dev` uses the PR title as the commit subject — contract "
-             "1 makes squash the standard on that edge — and the changelog is generated from "
-             "those subjects by commitizen. A non-conventional title therefore does not just "
-             "look untidy: it is dropped from the changelog and it cannot drive the version "
-             "bump, so the release notes silently under-report what shipped. Contract 4 requires "
-             "a real changelog readable by someone who did not write the code."),
-        how=("gh pr edit <n> --title 'fix(scope): what changed'\n"
-             "Add `!` after the type for a breaking change (`feat(api)!: ...`) — under "
-             "`major_version_zero` that bumps the MINOR."),
-    ))
+    res.findings.append(
+        Finding(
+            rule="conventional-title",
+            title="PR title is not a conventional commit",
+            what=(
+                f"Title: {title!r}\nExpected `type(scope)?: subject` where type is one of: "
+                f"{', '.join(cfg.commit_types)}."
+            ),
+            why=(
+                "Squash-merging a PR into `dev` uses the PR title as the commit subject — contract "
+                "1 makes squash the standard on that edge — and the changelog is generated from "
+                "those subjects by commitizen. A non-conventional title therefore does not just "
+                "look untidy: it is dropped from the changelog and it cannot drive the version "
+                "bump, so the release notes silently under-report what shipped. Contract 4 requires "
+                "a real changelog readable by someone who did not write the code."
+            ),
+            how=(
+                "gh pr edit <n> --title 'fix(scope): what changed'\n"
+                "Add `!` after the type for a breaking change (`feat(api)!: ...`) — under "
+                "`major_version_zero` that bumps the MINOR."
+            ),
+        )
+    )
     return res
 
 
@@ -1248,10 +1522,36 @@ def rule_conventional_title(cfg: Config) -> RuleResult:
 # Rule 10 — docs with the change
 # --------------------------------------------------------------------------------------
 
-SOURCE_SUFFIXES = {".rs", ".py", ".go", ".ts", ".tsx", ".js", ".jsx", ".sh", ".bash", ".c",
-                   ".cc", ".cpp", ".h", ".hpp", ".java", ".rb", ".nix", ".tf"}
+SOURCE_SUFFIXES = {
+    ".rs",
+    ".py",
+    ".go",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".sh",
+    ".bash",
+    ".c",
+    ".cc",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".java",
+    ".rb",
+    ".nix",
+    ".tf",
+}
 DOC_SUFFIXES = {".md", ".rst", ".adoc", ".txt"}
-TEST_PARTS = ("tests/", "test/", "spec/", "__tests__/", "/testdata/", "benches/", "fixtures/")
+TEST_PARTS = (
+    "tests/",
+    "test/",
+    "spec/",
+    "__tests__/",
+    "/testdata/",
+    "benches/",
+    "fixtures/",
+)
 DOC_LINE_RX = re.compile(r'^\+\s*(///|//!|#\'|"""|\'\'\'|/\*\*|\* @|#:)')
 
 
@@ -1281,25 +1581,40 @@ def rule_docs_with_change(cfg: Config) -> RuleResult:
         return res
     paths, err = changed_files(cfg)
     if err:
-        res.findings.append(Finding(
-            rule="docs-with-change", title="could not determine changed files",
-            what=f"Neither `git diff` nor the pulls/files API produced a file list: {err}",
-            why="UNKNOWN, not empty — the checker cannot claim the docs rule passed.",
-            how="Ensure the caller checks out with `fetch-depth: 0` and grants `contents: read`.",
-            unknown=True))
+        res.findings.append(
+            Finding(
+                rule="docs-with-change",
+                title="could not determine changed files",
+                what=f"Neither `git diff` nor the pulls/files API produced a file list: {err}",
+                why="UNKNOWN, not empty — the checker cannot claim the docs rule passed.",
+                how="Ensure the caller checks out with `fetch-depth: 0` and grants `contents: read`.",
+                unknown=True,
+            )
+        )
         return res
     if not paths:
-        res.checked.append("PR changes no files — nothing to check (empty, not unknown)")
+        res.checked.append(
+            "PR changes no files — nothing to check (empty, not unknown)"
+        )
         return res
 
-    behaviour = [p for p in paths
-                 if Path(p).suffix in SOURCE_SUFFIXES
-                 and not any(t in f"/{p}" for t in TEST_PARTS)]
-    docs = [p for p in paths
-            if Path(p).suffix in DOC_SUFFIXES or p.startswith("docs/")
-            or Path(p).name.upper().startswith(("README", "USAGE", "CHANGELOG"))]
-    res.checked.append(f"{len(paths)} changed file(s): {len(behaviour)} behavioural source, "
-                       f"{len(docs)} doc")
+    behaviour = [
+        p
+        for p in paths
+        if Path(p).suffix in SOURCE_SUFFIXES
+        and not any(t in f"/{p}" for t in TEST_PARTS)
+    ]
+    docs = [
+        p
+        for p in paths
+        if Path(p).suffix in DOC_SUFFIXES
+        or p.startswith("docs/")
+        or Path(p).name.upper().startswith(("README", "USAGE", "CHANGELOG"))
+    ]
+    res.checked.append(
+        f"{len(paths)} changed file(s): {len(behaviour)} behavioural source, "
+        f"{len(docs)} doc"
+    )
     if not behaviour or docs:
         return res
 
@@ -1307,35 +1622,52 @@ def rule_docs_with_change(cfg: Config) -> RuleResult:
     # exactly the change-scoped documentation the contract asks for.
     base_sha = str(pr.get("base", {}).get("sha", ""))
     if base_sha:
-        p = run(["git", "diff", "-U0", f"{base_sha}...HEAD", "--"] + behaviour, cfg.repo_root)
-        if p.returncode == 0 and any(DOC_LINE_RX.match(ln) for ln in p.stdout.splitlines()):
-            res.checked.append("doc comments added inside the source diff — counts as docs.")
+        p = run(
+            ["git", "diff", "-U0", f"{base_sha}...HEAD", "--"] + behaviour,
+            cfg.repo_root,
+        )
+        if p.returncode == 0 and any(
+            DOC_LINE_RX.match(ln) for ln in p.stdout.splitlines()
+        ):
+            res.checked.append(
+                "doc comments added inside the source diff — counts as docs."
+            )
             return res
 
-    res.findings.append(Finding(
-        rule="docs-with-change",
-        title="behaviour changed and no documentation moved with it",
-        what=("These source files changed with no doc comment, README/USAGE or `docs/` update in "
-              "the same PR:\n" + "\n".join(f"    {p}" for p in behaviour[:20])
-              + ("\n    ..." if len(behaviour) > 20 else "")),
-        why=("Stale docs are actively worse than missing ones, because they are believed. This "
-             "fleet has already produced three bugs where the documentation is what made them "
-             "invisible: a `rust-version` input that was documented, surfaced as a dropdown and "
-             "silently ignored; a `caller-ci.yml` comment asserting a job name that was wrong; "
-             "and a sizing comment claiming \"clippy-only jobs are light\" while clippy was being "
-             "OOM-killed. Contract 5a: docs are a required deliverable, in the same PR, scoped "
-             "to exactly what changed."),
-        how=("Update the doc comment on anything whose public behaviour moved, and the "
-             "README/USAGE line for any documented flag, input or default. Google-style, and "
-             "state the WHY — the signature already says what. If this PR genuinely changes no "
-             "behaviour, this stays a warning and you can merge past it."),
-    ))
+    res.findings.append(
+        Finding(
+            rule="docs-with-change",
+            title="behaviour changed and no documentation moved with it",
+            what=(
+                "These source files changed with no doc comment, README/USAGE or `docs/` update in "
+                "the same PR:\n"
+                + "\n".join(f"    {p}" for p in behaviour[:20])
+                + ("\n    ..." if len(behaviour) > 20 else "")
+            ),
+            why=(
+                "Stale docs are actively worse than missing ones, because they are believed. This "
+                "fleet has already produced three bugs where the documentation is what made them "
+                "invisible: a `rust-version` input that was documented, surfaced as a dropdown and "
+                "silently ignored; a `caller-ci.yml` comment asserting a job name that was wrong; "
+                'and a sizing comment claiming "clippy-only jobs are light" while clippy was being '
+                "OOM-killed. Contract 5a: docs are a required deliverable, in the same PR, scoped "
+                "to exactly what changed."
+            ),
+            how=(
+                "Update the doc comment on anything whose public behaviour moved, and the "
+                "README/USAGE line for any documented flag, input or default. Google-style, and "
+                "state the WHY — the signature already says what. If this PR genuinely changes no "
+                "behaviour, this stays a warning and you can merge past it."
+            ),
+        )
+    )
     return res
 
 
 # --------------------------------------------------------------------------------------
 # Rule 11 — trunk divergence (the post-merge detector for a squashed promote)
 # --------------------------------------------------------------------------------------
+
 
 def rule_trunk_divergence(cfg: Config) -> RuleResult:
     res = RuleResult()
@@ -1357,92 +1689,133 @@ def rule_trunk_divergence(cfg: Config) -> RuleResult:
         if missing:
             res.checked.append(
                 f"branch(es) {missing} do not exist on origin — no promote edge to measure "
-                "yet (empty, not unknown)")
+                "yet (empty, not unknown)"
+            )
             return res
-        res.findings.append(Finding(
-            rule="trunk-divergence", title="could not fetch the trunk branches",
-            what=f"`git fetch origin {a} {b}` failed:\n{fetch.stderr.strip()}",
-            why=("UNKNOWN, not empty. Without both trunks the checker cannot tell whether the "
-                 "promote ancestry is intact."),
-            how="Check out with `fetch-depth: 0` and ensure the token can read the repository.",
-            unknown=True))
+        res.findings.append(
+            Finding(
+                rule="trunk-divergence",
+                title="could not fetch the trunk branches",
+                what=f"`git fetch origin {a} {b}` failed:\n{fetch.stderr.strip()}",
+                why=(
+                    "UNKNOWN, not empty. Without both trunks the checker cannot tell whether the "
+                    "promote ancestry is intact."
+                ),
+                how="Check out with `fetch-depth: 0` and ensure the token can read the repository.",
+                unknown=True,
+            )
+        )
         return res
 
     mb = run(["git", "merge-base", f"origin/{a}", f"origin/{b}"], root)
     if mb.returncode != 0:
         ahead = run(["git", "rev-list", "--count", f"origin/{a}"], root).stdout.strip()
-        res.findings.append(Finding(
-            rule="trunk-divergence",
-            title=f"`{a}` and `{b}` have NO MERGE BASE — disjoint histories",
-            what=(f"`git merge-base origin/{a} origin/{b}` found nothing. The two trunks share "
-                  f"no common ancestor at all ({a} has {ahead} commits)."),
-            why=SQUASH_DAMAGE,
-            how=(f"One-time reconciliation, as a MERGE (contract 1: `main` -> `dev` is merge, "
-                 f"never reset or force):\n"
-                 f"    git checkout {b} && git pull\n"
-                 f"    git merge --no-ff --allow-unrelated-histories origin/{a}\n"
-                 f"    # resolve, keeping {a}'s content where the trees already agree\n"
-                 f"    git switch -c chore/reconcile-{b} && git push -u origin HEAD\n"
-                 f"    gh pr create --base {b} --title 'chore(sync): back-merge {a} into {b}'\n"
-                 f"Merge that PR with a MERGE COMMIT. Do not force-push {b}."),
-        ))
+        res.findings.append(
+            Finding(
+                rule="trunk-divergence",
+                title=f"`{a}` and `{b}` have NO MERGE BASE — disjoint histories",
+                what=(
+                    f"`git merge-base origin/{a} origin/{b}` found nothing. The two trunks share "
+                    f"no common ancestor at all ({a} has {ahead} commits)."
+                ),
+                why=SQUASH_DAMAGE,
+                how=(
+                    f"One-time reconciliation, as a MERGE (contract 1: `main` -> `dev` is merge, "
+                    f"never reset or force):\n"
+                    f"    git checkout {b} && git pull\n"
+                    f"    git merge --no-ff --allow-unrelated-histories origin/{a}\n"
+                    f"    # resolve, keeping {a}'s content where the trees already agree\n"
+                    f"    git switch -c chore/reconcile-{b} && git push -u origin HEAD\n"
+                    f"    gh pr create --base {b} --title 'chore(sync): back-merge {a} into {b}'\n"
+                    f"Merge that PR with a MERGE COMMIT. Do not force-push {b}."
+                ),
+            )
+        )
         return res
 
     base = mb.stdout.strip()
-    a_only = run(["git", "rev-list", "--count", f"{base}..origin/{a}"], root).stdout.strip() or "?"
-    b_only = run(["git", "rev-list", "--count", f"{base}..origin/{b}"], root).stdout.strip() or "?"
-    same_tree = run(["git", "diff", "--quiet", f"origin/{a}", f"origin/{b}"], root).returncode == 0
+    a_only = (
+        run(["git", "rev-list", "--count", f"{base}..origin/{a}"], root).stdout.strip()
+        or "?"
+    )
+    b_only = (
+        run(["git", "rev-list", "--count", f"{base}..origin/{b}"], root).stdout.strip()
+        or "?"
+    )
+    same_tree = (
+        run(["git", "diff", "--quiet", f"origin/{a}", f"origin/{b}"], root).returncode
+        == 0
+    )
     res.checked.append(
         f"merge base {base[:8]}: `{a}` +{a_only}, `{b}` +{b_only}, trees "
-        f"{'identical' if same_tree else 'differ'}")
+        f"{'identical' if same_tree else 'differ'}"
+    )
 
     # `main` carrying commits `dev` has never seen is the state a squashed promote leaves
     # behind, and also the ordinary state between a promote and its back-merge. It is worth
     # measuring either way, because the phantom-diff number below is exactly what every
     # branch cut from `dev` will be asked to resolve.
     if a_only not in ("0", "?") and not same_tree:
-        stat = run(["git", "diff", "--shortstat", f"origin/{b}", f"origin/{a}"],
-                   root).stdout.strip()
-        res.findings.append(Finding(
-            rule="trunk-divergence",
-            title=f"`{b}` is {a_only} commit(s) behind `{a}`",
-            what=(f"`origin/{a}` has {a_only} commit(s) not reachable from `origin/{b}`; the "
-                  f"merge base is {base[:8]}. Diff `{b}` -> `{a}`: {stat or 'unavailable'}."),
-            why=("Contract 1: lowers update off `main` after a release lands, *then* continue. "
-                 "Until the back-merge happens, every branch cut from `dev` is built on a "
-                 "pre-release base and is manufacturing a future conflict — the diff measured "
-                 "above is what it will be asked to resolve. This is an advisory, not a block: "
-                 "the window between a promote and its back-merge is legitimate. It becomes the "
-                 "expensive failure only when the promote was squashed, which the checks above "
-                 "detect separately."),
-            how=(f"gh pr create --base {b} --head {a} \\\n"
-                 f"  --title 'chore(sync): back-merge {a} into {b}'\n"
-                 f"Merge it with a MERGE COMMIT — never reset or force-push `{b}`."),
-            cap=WARNING,
-        ))
+        stat = run(
+            ["git", "diff", "--shortstat", f"origin/{b}", f"origin/{a}"], root
+        ).stdout.strip()
+        res.findings.append(
+            Finding(
+                rule="trunk-divergence",
+                title=f"`{b}` is {a_only} commit(s) behind `{a}`",
+                what=(
+                    f"`origin/{a}` has {a_only} commit(s) not reachable from `origin/{b}`; the "
+                    f"merge base is {base[:8]}. Diff `{b}` -> `{a}`: {stat or 'unavailable'}."
+                ),
+                why=(
+                    "Contract 1: lowers update off `main` after a release lands, *then* continue. "
+                    "Until the back-merge happens, every branch cut from `dev` is built on a "
+                    "pre-release base and is manufacturing a future conflict — the diff measured "
+                    "above is what it will be asked to resolve. This is an advisory, not a block: "
+                    "the window between a promote and its back-merge is legitimate. It becomes the "
+                    "expensive failure only when the promote was squashed, which the checks above "
+                    "detect separately."
+                ),
+                how=(
+                    f"gh pr create --base {b} --head {a} \\\n"
+                    f"  --title 'chore(sync): back-merge {a} into {b}'\n"
+                    f"Merge it with a MERGE COMMIT — never reset or force-push `{b}`."
+                ),
+                cap=WARNING,
+            )
+        )
 
     if same_tree and a_only != "0" and b_only == "0":
-        stat = run(["git", "diff", "--shortstat", base, f"origin/{a}"], root).stdout.strip()
-        res.findings.append(Finding(
-            rule="trunk-divergence",
-            title=f"`{b}` has identical content to `{a}` but is {a_only} commits behind it",
-            what=(f"`origin/{a}` and `origin/{b}` have IDENTICAL TREES, yet the merge base is "
-                  f"{base[:8]} — {a_only} commits back — and `{b}` carries zero unique commits. "
-                  f"That is the fingerprint of a squashed promote. Phantom diff against the "
-                  f"merge base: {stat or 'unavailable'}."),
-            why=SQUASH_DAMAGE,
-            how=(f"Restore the ancestry link with a back-merge, not a reset:\n"
-                 f"    gh pr create --base {b} --head {a} \\\n"
-                 f"      --title 'chore(sync): back-merge {a} into {b} — restore the merge base'\n"
-                 f"Merge it with a MERGE COMMIT. Then merge every promote with "
-                 f"`gh pr merge <n> --merge`."),
-        ))
+        stat = run(
+            ["git", "diff", "--shortstat", base, f"origin/{a}"], root
+        ).stdout.strip()
+        res.findings.append(
+            Finding(
+                rule="trunk-divergence",
+                title=f"`{b}` has identical content to `{a}` but is {a_only} commits behind it",
+                what=(
+                    f"`origin/{a}` and `origin/{b}` have IDENTICAL TREES, yet the merge base is "
+                    f"{base[:8]} — {a_only} commits back — and `{b}` carries zero unique commits. "
+                    f"That is the fingerprint of a squashed promote. Phantom diff against the "
+                    f"merge base: {stat or 'unavailable'}."
+                ),
+                why=SQUASH_DAMAGE,
+                how=(
+                    f"Restore the ancestry link with a back-merge, not a reset:\n"
+                    f"    gh pr create --base {b} --head {a} \\\n"
+                    f"      --title 'chore(sync): back-merge {a} into {b} — restore the merge base'\n"
+                    f"Merge it with a MERGE COMMIT. Then merge every promote with "
+                    f"`gh pr merge <n> --merge`."
+                ),
+            )
+        )
     return res
 
 
 # --------------------------------------------------------------------------------------
 # Rule 12 — actionlint (opt-in)
 # --------------------------------------------------------------------------------------
+
 
 def rule_actionlint(cfg: Config) -> RuleResult:
     res = RuleResult()
@@ -1452,14 +1825,22 @@ def rule_actionlint(cfg: Config) -> RuleResult:
         return res
     probe = run(["bash", "-lc", "command -v actionlint"], cfg.repo_root)
     if probe.returncode != 0:
-        res.findings.append(Finding(
-            rule="actionlint", title="actionlint is enabled but not installed",
-            what="`actionlint` is not on PATH on this runner, so no workflow was linted.",
-            why=("UNKNOWN, not empty: the rule was switched on and produced no measurement. "
-                 "Reporting green here would be a gate that is off while looking on."),
-            how=("Install it on the runner image, or set the `actionlint` input to `off`:\n"
-                 "    go install github.com/rhysd/actionlint/cmd/actionlint@latest"),
-            unknown=True))
+        res.findings.append(
+            Finding(
+                rule="actionlint",
+                title="actionlint is enabled but not installed",
+                what="`actionlint` is not on PATH on this runner, so no workflow was linted.",
+                why=(
+                    "UNKNOWN, not empty: the rule was switched on and produced no measurement. "
+                    "Reporting green here would be a gate that is off while looking on."
+                ),
+                how=(
+                    "Install it on the runner image, or set the `actionlint` input to `off`:\n"
+                    "    go install github.com/rhysd/actionlint/cmd/actionlint@latest"
+                ),
+                unknown=True,
+            )
+        )
         return res
     p = run(["actionlint", "-oneline"] + [str(f) for f in files], cfg.repo_root)
     res.checked.append(f"actionlint over {len(files)} workflow file(s)")
@@ -1467,16 +1848,21 @@ def rule_actionlint(cfg: Config) -> RuleResult:
         if not ln.strip():
             continue
         m = re.match(r"^([^:]+):(\d+):(\d+): (.*)$", ln)
-        res.findings.append(Finding(
-            rule="actionlint", title="actionlint",
-            what=ln.strip(),
-            why=("actionlint catches expression, context and shell errors that `yaml.safe_load` "
-                 "cannot see — a valid YAML file can still reference a context that does not "
-                 "exist, which fails only at runtime."),
-            how="Fix the reported line; run `actionlint` locally to iterate.",
-            file=m.group(1) if m else None,
-            line=int(m.group(2)) if m else None,
-        ))
+        res.findings.append(
+            Finding(
+                rule="actionlint",
+                title="actionlint",
+                what=ln.strip(),
+                why=(
+                    "actionlint catches expression, context and shell errors that `yaml.safe_load` "
+                    "cannot see — a valid YAML file can still reference a context that does not "
+                    "exist, which fails only at runtime."
+                ),
+                how="Fix the reported line; run `actionlint` locally to iterate.",
+                file=m.group(1) if m else None,
+                line=int(m.group(2)) if m else None,
+            )
+        )
     return res
 
 
@@ -1531,7 +1917,9 @@ def annotate(level: str, f: Finding) -> None:
 
 def main() -> int:
     cfg = load_config()
-    print(f"standards: repo={cfg.repo_slug} event={cfg.event_name} root={cfg.repo_root}")
+    print(
+        f"standards: repo={cfg.repo_slug} event={cfg.event_name} root={cfg.repo_root}"
+    )
 
     summary: list[str] = [
         "## Development standards",
@@ -1555,13 +1943,21 @@ def main() -> int:
         try:
             result = fn(cfg)
         except Exception as exc:  # noqa: BLE001 - a crashed rule is UNKNOWN, never a pass
-            result = RuleResult(findings=[Finding(
-                rule=rule_id, title="rule crashed",
-                what=f"{type(exc).__name__}: {exc}",
-                why=("A rule that crashed measured nothing. Contract 4a: unknown must fail "
-                     "loudly rather than pass quietly."),
-                how="Report this against tzervas/ap-workflows scripts/standards_check.py.",
-                unknown=True)])
+            result = RuleResult(
+                findings=[
+                    Finding(
+                        rule=rule_id,
+                        title="rule crashed",
+                        what=f"{type(exc).__name__}: {exc}",
+                        why=(
+                            "A rule that crashed measured nothing. Contract 4a: unknown must fail "
+                            "loudly rather than pass quietly."
+                        ),
+                        how="Report this against tzervas/ap-workflows scripts/standards_check.py.",
+                        unknown=True,
+                    )
+                ]
+            )
 
         for line in result.checked:
             print(f"  checked: {line}")
@@ -1582,8 +1978,13 @@ def main() -> int:
             tag = {ERROR: "FAIL", WARNING: "warn", NOTICE: "note"}[lvl]
             detail.append(
                 f"### {tag} — {rule_id}: {f.title}\n\n"
-                + (f"`{f.file}`" + (f":{f.line}" if f.line else "") + "\n\n" if f.file else "")
-                + f"**What:** {f.what}\n\n**Why:** {f.why}\n\n**How:**\n```\n{f.how}\n```\n")
+                + (
+                    f"`{f.file}`" + (f":{f.line}" if f.line else "") + "\n\n"
+                    if f.file
+                    else ""
+                )
+                + f"**What:** {f.what}\n\n**Why:** {f.why}\n\n**How:**\n```\n{f.how}\n```\n"
+            )
 
         if errs:
             verdict = f"❌ {errs} error(s)" + (f", {warns} warning(s)" if warns else "")
@@ -1592,20 +1993,26 @@ def main() -> int:
         elif notes:
             verdict = f"ℹ️ {notes} note(s) — nothing to fix"
         else:
-            verdict = "✅ clean — " + (result.checked[0] if result.checked else "nothing to check")
+            verdict = "✅ clean — " + (
+                result.checked[0] if result.checked else "nothing to check"
+            )
         summary.append(f"| {rule_id} — {RULE_TITLES[rule_id]} | {mode} | {verdict} |")
 
     summary.append("")
     if not failed and not counts[WARNING]:
-        summary.append("Everything checked is clean. An empty result set is a real answer: "
-                       "this job passes because nothing was found, not because nothing ran.")
+        summary.append(
+            "Everything checked is clean. An empty result set is a real answer: "
+            "this job passes because nothing was found, not because nothing ran."
+        )
     if detail:
         summary.append("")
         summary += detail
     summary.append("")
-    summary.append("Rules, toggles and the operator settings commands: "
-                   "[`docs/STANDARDS.md`](https://github.com/tzervas/ap-workflows/blob/"
-                   "main/docs/STANDARDS.md)")
+    summary.append(
+        "Rules, toggles and the operator settings commands: "
+        "[`docs/STANDARDS.md`](https://github.com/tzervas/ap-workflows/blob/"
+        "main/docs/STANDARDS.md)"
+    )
 
     out = env("GITHUB_STEP_SUMMARY")
     text = "\n".join(summary) + "\n"
@@ -1617,8 +2024,10 @@ def main() -> int:
 
     print(f"\nstandards: {counts[ERROR]} error(s), {counts[WARNING]} warning(s)")
     if failed:
-        print("::error title=standards: contract violations::One or more enforced rules failed. "
-              "Each annotation above says what, why and how. Full detail is in the job summary.")
+        print(
+            "::error title=standards: contract violations::One or more enforced rules failed. "
+            "Each annotation above says what, why and how. Full detail is in the job summary."
+        )
         return 1
     return 0
 
