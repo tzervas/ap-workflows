@@ -72,6 +72,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 #   shellcheck                reusable-ci-shell.yml FAILS rather than skipping
 #                             when a requested tool is missing
 #   age                       sops' encryption backend
+#   gh / sops / trivy         release-tarball installs below (checksum-verified)
 RUN apt-get update -qq \
     && apt-get install -y -qq --no-install-recommends \
         ca-certificates \
@@ -129,10 +130,37 @@ RUN set -eu; \
     rm -rf /tmp/*; \
     sops --version
 
-# Prove the image is what it claims to be at BUILD time, so a broken layer fails
-# here rather than in somebody's CI job an hour later.
+# ── trivy: required by fleet-ops CI-QUALITY-GATES §5 / reusable-scan-secrets-vuln
+# Without this binary on the runner image, required "trivy filesystem …" checks
+# can go green in sub-second while scanning nothing (tool missing → soft skip).
+# Pin: aquasecurity/trivy v0.72.0 (latest stable as of 2026-07-27).
+ARG TRIVY_VERSION=0.72.0
 RUN set -eu; \
-    for t in git curl jq openssl python3 shellcheck age gh sops; do \
+    case "$(dpkg --print-architecture)" in \
+      amd64) TARCH=64bit ;; \
+      arm64) TARCH=ARM64 ;; \
+      *) echo "unsupported architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    TB="trivy_${TRIVY_VERSION}_Linux-${TARCH}.tar.gz"; \
+    BASE="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"; \
+    cd /tmp; \
+    curl -fsSL -o "$TB" "${BASE}/${TB}"; \
+    curl -fsSL -o sums "${BASE}/trivy_${TRIVY_VERSION}_checksums.txt"; \
+    grep " ${TB}\$" sums > expected.sha256; \
+    sha256sum -c expected.sha256; \
+    tar -xzf "$TB" trivy; \
+    install -m 0755 trivy /usr/local/bin/trivy; \
+    rm -rf /tmp/*; \
+    trivy --version
+
+# Language toolchains (rustc, cargo, ruff, python venvs, go, …) belong in
+# derived images that build FROM this base via the reusable workflow's
+# base-image input — not here. This layer stays fleet-common and slow-moving.
+
+# Prove the image is what it claims to be at BUILD time, so a broken layer fails
+# here rather than in somebody's CI job an hour later. Missing tools exit 1.
+RUN set -eu; \
+    for t in git curl jq openssl python3 shellcheck age gh sops trivy; do \
       command -v "$t" >/dev/null || { echo "missing from image: $t" >&2; exit 1; }; \
     done; \
     python3 -c 'import yaml' || { echo "pyyaml missing from image" >&2; exit 1; }; \

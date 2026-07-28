@@ -42,15 +42,24 @@ differing.
 The same constraint is why images matter at all here. Every
 `sudo apt-get install <tool>` in a fleet workflow is unfixable on a rootless
 runner; the durable answer is a base image that already carries the tool.
-`images/runner-base/Containerfile` is that image — it carries `gh`, `sops`,
-`shellcheck`, `age`, `jq` and `python3`+`pyyaml`, and verifies at build time
-that each is present rather than letting a broken layer surface in someone's CI
-an hour later.
+`images/runner-base/Containerfile` is that image — published as:
+
+```text
+ghcr.io/tzervas/ap-workflows/runner-base
+```
+
+It bakes in `gh`, `sops`, `shellcheck`, `age`, `jq`, `python3`+`pyyaml`, and
+**`trivy`** (checksum-pinned), and verifies at build time that each is on
+`PATH` rather than letting a broken layer surface in someone's CI an hour later.
+Consumers must use these baked tools — there is no `sudo apt` escape hatch on
+rootless fleet runners. With `trivy` in the base, required fleet security checks
+can run real scans instead of going green in sub-second while scanning nothing.
 
 **Layering follows the same shape as the workflows: high-level defaults,
 overridden lower down.** A fleet base is published once; project- and repo-level
 images build on top of it via the `base-image` input rather than duplicating its
-contents:
+contents (language toolchains like `rustc` / `ruff` belong in those derived
+images, not here):
 
 ```yaml
 jobs:

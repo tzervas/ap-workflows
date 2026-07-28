@@ -1,14 +1,20 @@
 # Build and publish the fleet runner base image.
 #
+# Published ref (when push is true):
+#   ghcr.io/tzervas/ap-workflows/runner-base
+# Tags: sha-<12>, branch/tag name, and `latest` on main pushes.
+#
 # This repo calls its own reusable workflow — the same entry point component
 # repos use — so the interface is exercised by its owner rather than only by
 # consumers. If this breaks, every caller was about to break too.
 #
 # The image carries the tools a rootless job cannot install for itself (gh,
-# sops, shellcheck, age, jq, python3+pyyaml). See images/runner-base/Containerfile
-# for why that constraint exists.
+# sops, shellcheck, age, jq, python3+pyyaml, trivy). See
+# images/runner-base/Containerfile for why that constraint exists.
 #
-# PRs build without pushing. main and version tags publish.
+# Push path: PR / workflow_dispatch default push:false (build only).
+# main and version tags (v*) push to GHCR. Timeout is 45m via the reusable
+# workflow default — enough for apt + multi-release checksum installs.
 name: image-runner-base
 
 on:

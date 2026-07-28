@@ -19,6 +19,9 @@
 # rootless runner; the durable answer is an image that already carries the tool.
 # That requires somewhere to build and publish images — this is that.
 #
+# Fleet base published as: ghcr.io/tzervas/ap-workflows/runner-base
+# (see image-runner-base.yml). Default timeout-minutes: 45.
+#
 # Sibling of reusable-ci-*.yml; input names follow the same conventions
 # (runner-labels as a JSON array string, timeout-minutes, everything optional).
 #
