@@ -29,7 +29,9 @@
 # BASE_IMAGE is an ARG so this file can be retargeted without editing it. The
 # default is a plain Ubuntu LTS; point it at the actual actions-runner base in
 # use if that differs, since this image must still be able to host the runner.
-ARG BASE_IMAGE=ubuntu:24.04
+# Pin by digest so rebuilds do not silently pick up a different 24.04 tip.
+# Index digest for multi-arch ubuntu:24.04 (Docker Hub, as of sec-20260728).
+ARG BASE_IMAGE=ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
 FROM ${BASE_IMAGE}
 
 # NO `SHELL ["/bin/bash", "-o", "pipefail", "-c"]` HERE — it does not work, and
@@ -73,7 +75,10 @@ ARG DEBIAN_FRONTEND=noninteractive
 #                             when a requested tool is missing
 #   age                       sops' encryption backend
 #   gh / sops / trivy         release-tarball installs below (checksum-verified)
+# apt-get upgrade applies current Ubuntu security patches for OS packages
+# before the install set lands (sec-20260728 hardening pass).
 RUN apt-get update -qq \
+    && apt-get upgrade -y -qq \
     && apt-get install -y -qq --no-install-recommends \
         ca-certificates \
         curl \
@@ -92,7 +97,15 @@ RUN apt-get update -qq \
 # close-issues-on-{main,merge}.yml need it. Installed from the release tarball
 # rather than the apt repo so the version is explicit and the layer does not
 # depend on a third-party apt source staying reachable.
-ARG GH_VERSION=2.65.0
+#
+# GH_VERSION 2.96.0 rebuilds the binary on a newer Go toolchain, clearing
+# CRITICAL stdlib (CVE-2025-68121) and google.golang.org/grpc (CVE-2026-33186)
+# that shipped in usr/local/bin/gh from 2.65.0. Checksums are fetched from the
+# GitHub release at build time (gh_*_checksums.txt) — never invented here.
+# Verified release assets (v2.96.0):
+#   amd64 tar.gz sha256:83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60
+#   arm64 tar.gz sha256:06f86ec7103d41993b76cd78072f43595c34aaa56506d971d9860e67140bf909
+ARG GH_VERSION=2.96.0
 RUN set -eu; \
     case "$(dpkg --print-architecture)" in \
       amd64) GH_ARCH=amd64 ;; \
