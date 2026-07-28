@@ -1,0 +1,171 @@
+# Fleet runner base image.
+#
+# WHY THIS EXISTS
+# The self-hosted runners are rootless podman with `no_new_privs` set, so a job
+# step can never escalate:
+#
+#     sudo: The "no new privileges" flag is set, which prevents sudo from
+#     running as root.
+#
+# That makes `sudo apt-get install <tool>` unfixable inside a workflow — not
+# awkward, impossible. Every tool a job needs must therefore already be in the
+# image. Anything installed per-job is a workaround waiting to break.
+#
+# LAYERING
+# This is the FLEET-LEVEL base: the tools every repo's CI reaches for. Project-
+# and repo-level images build FROM it and add only what is specific to them,
+# via the reusable workflow's `base-image` input:
+#
+#     jobs:
+#       image:
+#         uses: tzervas/ap-workflows/.github/workflows/reusable-image-build.yml@v0.1
+#         with:
+#           base-image: ghcr.io/tzervas/ap-workflows/runner-base:latest
+#
+# Keep this layer boring and slow-moving. A tool that only one repo needs
+# belongs in that repo's own image, not here — this one is rebuilt rarely and
+# every repo inherits its size.
+#
+# BASE_IMAGE is an ARG so this file can be retargeted without editing it. The
+# default is a plain Ubuntu LTS; point it at the actual actions-runner base in
+# use if that differs, since this image must still be able to host the runner.
+ARG BASE_IMAGE=ubuntu:24.04
+FROM ${BASE_IMAGE}
+
+# NO `SHELL ["/bin/bash", "-o", "pipefail", "-c"]` HERE — it does not work, and
+# the way it fails is worth writing down.
+#
+# podman/buildah builds OCI format by default, and OCI has no field for SHELL.
+# The build does not stop; it prints
+#
+#     level=warning msg="SHELL is not supported for OCI image format,
+#     [/bin/bash -o pipefail -c] will be ignored. Must use `docker` format"
+#
+# and carries on. Every RUN then executes under /bin/sh, which on Ubuntu is
+# dash, and dash has no `-o pipefail`. The apt layer below has no pipefail so it
+# succeeded; the build died four steps later on the gh layer with
+#
+#     /bin/sh: 1: set: Illegal option -o pipefail
+#
+# — a message pointing at the RUN rather than at the ignored SHELL four steps
+# above it. A directive that is silently dropped and then surfaces as an
+# unrelated error is the same shape as the rest of this fleet's gate problems.
+#
+# The fix is deliberately NOT `--format docker`. That would restore SHELL, but
+# it makes this file's correctness depend on a flag passed from somewhere else,
+# and pins the published image to Docker v2s2 for a build-time convenience.
+#
+# Instead every RUN below is correct under plain `sh`: `set -eu`, which dash
+# supports, and no pipe whose middle exit status needs catching. See the two
+# checksum steps for how the only real pipe was removed.
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+# The tools fleet CI actually shells out to. Deliberately minimal: this is the
+# layer every repo pays for.
+#   git/curl/ca-certificates  checkout and every download step
+#   jq                        every fleet script parses JSON with it
+#   openssl                   RS256 JWT signing on the GitHub App token path
+#   python3 + pyyaml          the SOPS-config editors parse YAML rather than
+#                             string-munging it (a line-position assumption once
+#                             broke every decrypt in the fleet)
+#   shellcheck                reusable-ci-shell.yml FAILS rather than skipping
+#                             when a requested tool is missing
+#   age                       sops' encryption backend
+#   gh / sops / trivy         release-tarball installs below (checksum-verified)
+RUN apt-get update -qq \
+    && apt-get install -y -qq --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        jq \
+        openssl \
+        python3 \
+        python3-yaml \
+        shellcheck \
+        age \
+        tar \
+        gzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── gh: the tool whose absence started this ───────────────────────────────────
+# close-issues-on-{main,merge}.yml need it. Installed from the release tarball
+# rather than the apt repo so the version is explicit and the layer does not
+# depend on a third-party apt source staying reachable.
+ARG GH_VERSION=2.65.0
+RUN set -eu; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) GH_ARCH=amd64 ;; \
+      arm64) GH_ARCH=arm64 ;; \
+      *) echo "unsupported architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    TB="gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz"; \
+    BASE="https://github.com/cli/cli/releases/download/v${GH_VERSION}"; \
+    cd /tmp; \
+    curl -fsSL -o "$TB" "${BASE}/${TB}"; \
+    curl -fsSL -o sums "${BASE}/gh_${GH_VERSION}_checksums.txt"; \
+    grep " ${TB}\$" sums > expected.sha256; \
+    sha256sum -c expected.sha256; \
+    tar -xzf "$TB"; \
+    install -m 0755 "gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh" /usr/local/bin/gh; \
+    rm -rf /tmp/*; \
+    gh --version
+
+# ── sops: pinned and checksum-verified, matching setup-laptop.sh ──────────────
+ARG SOPS_VERSION=3.13.3
+RUN set -eu; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) SARCH=amd64 ;; \
+      arm64) SARCH=arm64 ;; \
+      *) echo "unsupported architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    BIN="sops-v${SOPS_VERSION}.linux.${SARCH}"; \
+    BASE="https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}"; \
+    cd /tmp; \
+    curl -fsSL -o "$BIN" "${BASE}/${BIN}"; \
+    curl -fsSL -o sums "${BASE}/sops-v${SOPS_VERSION}.checksums.txt"; \
+    grep " ${BIN}\$" sums > expected.sha256; \
+    sha256sum -c expected.sha256; \
+    install -m 0755 "$BIN" /usr/local/bin/sops; \
+    rm -rf /tmp/*; \
+    sops --version
+
+# ── trivy: required by fleet-ops CI-QUALITY-GATES §5 / reusable-scan-secrets-vuln
+# Without this binary on the runner image, required "trivy filesystem …" checks
+# can go green in sub-second while scanning nothing (tool missing → soft skip).
+# Pin: aquasecurity/trivy v0.72.0 (latest stable as of 2026-07-27).
+ARG TRIVY_VERSION=0.72.0
+RUN set -eu; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) TARCH=64bit ;; \
+      arm64) TARCH=ARM64 ;; \
+      *) echo "unsupported architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    TB="trivy_${TRIVY_VERSION}_Linux-${TARCH}.tar.gz"; \
+    BASE="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"; \
+    cd /tmp; \
+    curl -fsSL -o "$TB" "${BASE}/${TB}"; \
+    curl -fsSL -o sums "${BASE}/trivy_${TRIVY_VERSION}_checksums.txt"; \
+    grep " ${TB}\$" sums > expected.sha256; \
+    sha256sum -c expected.sha256; \
+    tar -xzf "$TB" trivy; \
+    install -m 0755 trivy /usr/local/bin/trivy; \
+    rm -rf /tmp/*; \
+    trivy --version
+
+# Language toolchains (rustc, cargo, ruff, python venvs, go, …) belong in
+# derived images that build FROM this base via the reusable workflow's
+# base-image input — not here. This layer stays fleet-common and slow-moving.
+
+# Prove the image is what it claims to be at BUILD time, so a broken layer fails
+# here rather than in somebody's CI job an hour later. Missing tools exit 1.
+RUN set -eu; \
+    for t in git curl jq openssl python3 shellcheck age gh sops trivy; do \
+      command -v "$t" >/dev/null || { echo "missing from image: $t" >&2; exit 1; }; \
+    done; \
+    python3 -c 'import yaml' || { echo "pyyaml missing from image" >&2; exit 1; }; \
+    echo "runner-base: all expected tools present"
+
+LABEL org.opencontainers.image.source="https://github.com/tzervas/ap-workflows" \
+      org.opencontainers.image.description="Fleet runner base — carries the tools rootless jobs cannot install themselves" \
+      org.opencontainers.image.licenses="MIT"
