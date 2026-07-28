@@ -44,8 +44,8 @@ jobs:
     name: test
     runs-on: [self-hosted, linux, x64, podman]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - name: pytest
