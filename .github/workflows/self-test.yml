@@ -49,7 +49,7 @@ permissions:
 jobs:
   validate:
     name: validate workflows
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, podman]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7

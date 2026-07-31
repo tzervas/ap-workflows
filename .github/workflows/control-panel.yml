@@ -71,7 +71,7 @@ concurrency:
 jobs:
   resolve:
     name: resolve selection
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, podman]
     outputs:
       repos: ${{ steps.pick.outputs.repos }}
       labels: ${{ steps.pick.outputs.labels }}
@@ -151,7 +151,7 @@ jobs:
     name: dispatch to selected repos
     needs: resolve
     if: inputs.scope != 'this-repo-only'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, podman]
     steps:
       - name: Dispatch
         env:
