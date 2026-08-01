@@ -1,0 +1,25 @@
+# Central GitHub Actions pins for the fleet (compose-down source of truth).
+#
+# Policy (2026-08-01 orchestration / PKG-ORCH-WORKFLOWS):
+# - List the fleet's current **stable major** (or intentional floating ref) here.
+# - Dependabot still opens PRs on this repo for minors/patches; when adopting a
+#   *new major*, change it here first, run `scripts/check-action-pins.py`, merge.
+# - Callers pin `tzervas/ap-workflows/...@v0.1` so policy composes down without
+#   a PR per component repo.
+# - Exempt: local `./.github/actions/*`, `tzervas/ap-workflows` reusables, docker://
+# - Rootless / no-extra-packages applies **late** in image-build workflows — not
+#   as a restriction on which actions may appear in reusable CI.
+#
+# Schema: action org/name → ref after @
+
+actions:
+  actions/checkout: v7
+  actions/setup-python: v7
+  actions/upload-artifact: v7
+  actions/download-artifact: v4
+  actions/cache: v4
+  actions/github-script: v7
+  astral-sh/setup-uv: v9
+  # Parameterized toolchain: version comes from workflow input, not action ref.
+  dtolnay/rust-toolchain: master
+  dependabot/fetch-metadata: v3
