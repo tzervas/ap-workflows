@@ -22,6 +22,8 @@ on:
       - '.github/workflows/reusable-policy-contract.yml'
       - '.github/workflows/ci-checker.yml'
       - 'templates/caller-policy-contract.yml'
+      - 'pins/**'
+      - 'scripts/check-action-pins.py'
   push:
     branches: [main, dev]
   workflow_dispatch:
@@ -75,6 +77,9 @@ jobs:
 
       - name: Rule fixtures — every rule fires, and stays quiet when clean
         run: python3 scripts/standards_selftest.py
+
+      - name: Action pins match pins/actions.yml
+        run: python3 scripts/check-action-pins.py
 
       - name: The checker passes its own gate on this repo
         env:
