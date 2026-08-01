@@ -25,7 +25,7 @@ jobs:
   triage:
     name: dependabot triage
     if: github.actor == 'dependabot[bot]'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, podman]
     timeout-minutes: 10
     permissions:
       contents: write
