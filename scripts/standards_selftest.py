@@ -44,8 +44,8 @@ jobs:
     name: test
     runs-on: [self-hosted, linux, x64, podman]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - name: pytest
@@ -59,7 +59,9 @@ jobs:
 
 
 def sh(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, cwd=str(cwd), capture_output=True, text=True, check=False)
+    return subprocess.run(
+        args, cwd=str(cwd), capture_output=True, text=True, check=False
+    )
 
 
 def make_repo(root: Path, files: dict[str, str], with_dev: bool = True) -> None:
@@ -74,8 +76,12 @@ def make_repo(root: Path, files: dict[str, str], with_dev: bool = True) -> None:
         p = root / name
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(body, encoding="utf-8")
-    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e", "GIT_COMMITTER_NAME": "t",
-           "GIT_COMMITTER_EMAIL": "t@e"}
+    env = {
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@e",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@e",
+    }
     os.environ.update(env)
     sh(["git", "init", "-q", "-b", "main"], root)
     sh(["git", "add", "-A"], root)
@@ -89,16 +95,18 @@ def make_repo(root: Path, files: dict[str, str], with_dev: bool = True) -> None:
 
 def run_checker(root: Path, event: dict | None, **modes: str) -> tuple[int, str]:
     env = dict(os.environ)
-    env.update({
-        "STD_REPO_ROOT": str(root),
-        "GITHUB_REPOSITORY": "tzervas/fixture",
-        "GITHUB_EVENT_NAME": "pull_request" if event else "push",
-        # Unreachable on purpose: no network in the self-test, and the checker must
-        # report UNKNOWN rather than assume anything about repo settings.
-        "GITHUB_API_URL": "http://127.0.0.1:1",
-        "GITHUB_TOKEN": "",
-        "STD_TOKEN": "",
-    })
+    env.update(
+        {
+            "STD_REPO_ROOT": str(root),
+            "GITHUB_REPOSITORY": "tzervas/fixture",
+            "GITHUB_EVENT_NAME": "pull_request" if event else "push",
+            # Unreachable on purpose: no network in the self-test, and the checker must
+            # report UNKNOWN rather than assume anything about repo settings.
+            "GITHUB_API_URL": "http://127.0.0.1:1",
+            "GITHUB_TOKEN": "",
+            "STD_TOKEN": "",
+        }
+    )
     env.pop("GITHUB_STEP_SUMMARY", None)
     if event:
         ev = root / "_event.json"
@@ -108,19 +116,33 @@ def run_checker(root: Path, event: dict | None, **modes: str) -> tuple[int, str]
         env.pop("GITHUB_EVENT_PATH", None)
     for k, v in modes.items():
         env[f"STD_MODE_{k.upper().replace('-', '_')}"] = v
-    p = subprocess.run([sys.executable, str(CHECKER)], env=env, capture_output=True,
-                       text=True, check=False)
+    p = subprocess.run(
+        [sys.executable, str(CHECKER)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     return p.returncode, p.stdout + p.stderr
 
 
-def pr_event(base: str = "dev", head: str = "feat/x", title: str = "feat: a thing",
-             labels: list[str] | None = None, auto: str | None = None) -> dict:
-    return {"pull_request": {
-        "number": 1, "title": title,
-        "labels": [{"name": n} for n in (labels or [])],
-        "base": {"ref": base, "sha": ""}, "head": {"ref": head, "sha": ""},
-        "auto_merge": {"merge_method": auto} if auto else None,
-    }}
+def pr_event(
+    base: str = "dev",
+    head: str = "feat/x",
+    title: str = "feat: a thing",
+    labels: list[str] | None = None,
+    auto: str | None = None,
+) -> dict:
+    return {
+        "pull_request": {
+            "number": 1,
+            "title": title,
+            "labels": [{"name": n} for n in (labels or [])],
+            "base": {"ref": base, "sha": ""},
+            "head": {"ref": head, "sha": ""},
+            "auto_merge": {"merge_method": auto} if auto else None,
+        }
+    }
 
 
 FAILURES: list[str] = []
@@ -135,8 +157,10 @@ def expect(name: str, out: str, needle: str, present: bool = True) -> None:
         print(f"  ok    {name}")
     else:
         FAILURES.append(name)
-        print(f"  FAIL  {name}: expected {'to find' if present else 'NOT to find'} "
-              f"{needle!r}")
+        print(
+            f"  FAIL  {name}: expected {'to find' if present else 'NOT to find'} "
+            f"{needle!r}"
+        )
 
 
 def expect_rc(name: str, rc: int, want: int, out: str = "") -> None:
@@ -151,8 +175,14 @@ def expect_rc(name: str, rc: int, want: int, out: str = "") -> None:
         print(f"  FAIL  {name}: rc={rc}\n{out[-3000:]}")
 
 
-def case(title: str, files: dict[str, str], event: dict | None, checks,
-         with_dev: bool = True, **modes: str) -> None:
+def case(
+    title: str,
+    files: dict[str, str],
+    event: dict | None,
+    checks,
+    with_dev: bool = True,
+    **modes: str,
+) -> None:
     print(f"\n== {title}")
     tmp = Path(tempfile.mkdtemp(prefix="std-selftest-"))
     try:
@@ -164,202 +194,326 @@ def case(title: str, files: dict[str, str], event: dict | None, checks,
 
 
 def main() -> int:
-    base_files = {".github/workflows/ci.yml": CLEAN_WORKFLOW,
-                  ".cz.toml": '[tool.commitizen]\nversion = "0.1.0"\n',
-                  "VERSION": "0.1.0\n",
-                  "README.md": "# fixture\n"}
+    base_files = {
+        ".github/workflows/ci.yml": CLEAN_WORKFLOW,
+        ".cz.toml": '[tool.commitizen]\nversion = "0.1.0"\n',
+        "VERSION": "0.1.0\n",
+        "README.md": "# fixture\n",
+    }
 
     # --- clean baseline: everything on, nothing found ---------------------------------
     def clean(rc: int, out: str) -> None:
         expect_rc("clean: rc==0", rc, 0, out)
-        expect("clean: every rule reported that it checked something", out, "  checked:")
+        expect(
+            "clean: every rule reported that it checked something", out, "  checked:"
+        )
         expect("clean: no error annotations", out, "\n::error", present=False)
         expect("clean: no warning annotations", out, "\n::warning", present=False)
 
-    case("clean repo, every rule enforcing", base_files,
-         pr_event(), clean,
-         **{"version-drift": "enforce", "exit-contract": "enforce",
-            "python-floor": "enforce", "docs-with-change": "off",
-            "promote-merge-mode": "off"})
+    case(
+        "clean repo, every rule enforcing",
+        base_files,
+        pr_event(),
+        clean,
+        **{
+            "version-drift": "enforce",
+            "exit-contract": "enforce",
+            "python-floor": "enforce",
+            "docs-with-change": "off",
+            "promote-merge-mode": "off",
+        },
+    )
 
     # --- rule 6: YAML validity, the column-0 heredoc trap -------------------------------
     broken = CLEAN_WORKFLOW.replace(
         "          python3 - <<'PY'\n          print(\"indented heredoc: the terminator "
-        "below is inside the block scalar\")\n          PY\n",
-        "          python3 - <<'PY'\nprint(\"column zero\")\nPY\n")
+        'below is inside the block scalar")\n          PY\n',
+        "          python3 - <<'PY'\nprint(\"column zero\")\nPY\n",
+    )
 
     def yaml_broken(rc: int, out: str) -> None:
         expect("yaml-validity fires", out, "standards/yaml-validity")
-        expect("yaml-validity is an error", out, "::error title=standards/yaml-validity")
+        expect(
+            "yaml-validity is an error", out, "::error title=standards/yaml-validity"
+        )
         expect("yaml-validity names the column-0 cause", out, "COLUMN 0")
 
-    case("workflow with a column-0 heredoc", {**base_files,
-                                              ".github/workflows/ci.yml": broken},
-         pr_event(), yaml_broken, **{"docs-with-change": "off", "promote-merge-mode": "off"})
+    case(
+        "workflow with a column-0 heredoc",
+        {**base_files, ".github/workflows/ci.yml": broken},
+        pr_event(),
+        yaml_broken,
+        **{"docs-with-change": "off", "promote-merge-mode": "off"},
+    )
 
     # --- rule 6b: heredoc opened and never closed --------------------------------------
     unterminated = CLEAN_WORKFLOW.replace("          PY\n", "")
 
-    case("unterminated heredoc", {**base_files, ".github/workflows/ci.yml": unterminated},
-         pr_event(),
-         lambda rc, out: expect("unterminated heredoc fires", out, "unterminated heredoc"),
-         **{"docs-with-change": "off", "promote-merge-mode": "off"})
+    case(
+        "unterminated heredoc",
+        {**base_files, ".github/workflows/ci.yml": unterminated},
+        pr_event(),
+        lambda rc, out: expect(
+            "unterminated heredoc fires", out, "unterminated heredoc"
+        ),
+        **{"docs-with-change": "off", "promote-merge-mode": "off"},
+    )
 
     # --- rule 2: branch targeting -------------------------------------------------------
-    case("feature PR targeting main", base_files,
-         pr_event(base="main", head="feat/x"),
-         lambda rc, out: (
-             expect("branch-targeting fires", out, "standards/branch-targeting"),
-             expect("branch-targeting is an error", out,
-                    "::error title=standards/branch-targeting"),
-             expect_rc("branch-targeting fails the job", rc, 1, out),
-         ),
-         **{"docs-with-change": "off", "promote-merge-mode": "off",
-            "trunk-divergence": "off"})
+    case(
+        "feature PR targeting main",
+        base_files,
+        pr_event(base="main", head="feat/x"),
+        lambda rc, out: (
+            expect("branch-targeting fires", out, "standards/branch-targeting"),
+            expect(
+                "branch-targeting is an error",
+                out,
+                "::error title=standards/branch-targeting",
+            ),
+            expect_rc("branch-targeting fails the job", rc, 1, out),
+        ),
+        **{
+            "docs-with-change": "off",
+            "promote-merge-mode": "off",
+            "trunk-divergence": "off",
+        },
+    )
 
-    case("hotfix PR targeting main is allowed", base_files,
-         pr_event(base="main", head="hotfix/urgent", title="fix: urgent"),
-         lambda rc, out: expect("hotfix allowed", out, "standards/branch-targeting",
-                                present=False),
-         **{"docs-with-change": "off", "promote-merge-mode": "off",
-            "trunk-divergence": "off"})
+    case(
+        "hotfix PR targeting main is allowed",
+        base_files,
+        pr_event(base="main", head="hotfix/urgent", title="fix: urgent"),
+        lambda rc, out: expect(
+            "hotfix allowed", out, "standards/branch-targeting", present=False
+        ),
+        **{
+            "docs-with-change": "off",
+            "promote-merge-mode": "off",
+            "trunk-divergence": "off",
+        },
+    )
 
-    case("repo with no integration branch has no wrong target", base_files,
-         pr_event(base="main", head="feat/x"),
-         lambda rc, out: (
-             expect_rc("no dev branch: rc==0", rc, 0, out),
-             expect("no dev branch: reported as empty, not red", out,
-                    "does not exist on origin"),
-         ),
-         with_dev=False,
-         **{"docs-with-change": "off", "promote-merge-mode": "off",
-            "trunk-divergence": "off"})
+    case(
+        "repo with no integration branch has no wrong target",
+        base_files,
+        pr_event(base="main", head="feat/x"),
+        lambda rc, out: (
+            expect_rc("no dev branch: rc==0", rc, 0, out),
+            expect(
+                "no dev branch: reported as empty, not red",
+                out,
+                "does not exist on origin",
+            ),
+        ),
+        with_dev=False,
+        **{
+            "docs-with-change": "off",
+            "promote-merge-mode": "off",
+            "trunk-divergence": "off",
+        },
+    )
 
     # --- rule 1: promote merge mode -----------------------------------------------------
-    case("promote PR auto-merging with SQUASH", base_files,
-         pr_event(base="main", head="dev", title="release: v0.1.1", auto="SQUASH"),
-         lambda rc, out: (
-             expect("promote squash fires", out, "auto-merge armed with SQUASH"),
-             expect("promote message carries the measurement", out, "ace4fe3"),
-             expect("promote message teaches the fix", out, "--merge"),
-             expect("unreachable API reports UNKNOWN, not a pass", out,
-                    "could not read repository merge settings"),
-         ),
-         **{"docs-with-change": "off", "trunk-divergence": "off"})
+    case(
+        "promote PR auto-merging with SQUASH",
+        base_files,
+        pr_event(base="main", head="dev", title="release: v0.1.1", auto="SQUASH"),
+        lambda rc, out: (
+            expect("promote squash fires", out, "auto-merge armed with SQUASH"),
+            expect("promote message carries the measurement", out, "ace4fe3"),
+            expect("promote message teaches the fix", out, "--merge"),
+            expect(
+                "unreachable API reports UNKNOWN, not a pass",
+                out,
+                "could not read repository merge settings",
+            ),
+        ),
+        **{"docs-with-change": "off", "trunk-divergence": "off"},
+    )
 
-    case("work-branch PR is never nagged about squash", base_files,
-         pr_event(base="dev", head="feat/x"),
-         lambda rc, out: expect("no squash nag on the work edge", out,
-                                "standards/promote-merge-mode", present=False),
-         **{"docs-with-change": "off", "trunk-divergence": "off"})
+    case(
+        "work-branch PR is never nagged about squash",
+        base_files,
+        pr_event(base="dev", head="feat/x"),
+        lambda rc, out: expect(
+            "no squash nag on the work edge",
+            out,
+            "standards/promote-merge-mode",
+            present=False,
+        ),
+        **{"docs-with-change": "off", "trunk-divergence": "off"},
+    )
 
     # --- rule 3: protected refs ---------------------------------------------------------
-    force = CLEAN_WORKFLOW.replace("          pytest -q\n",
-                                   "          git push --force origin main\n")
-    case("workflow force-pushes main", {**base_files,
-                                        ".github/workflows/ci.yml": force},
-         pr_event(),
-         lambda rc, out: expect("protected-refs fires", out,
-                                "::error title=standards/protected-refs"),
-         **{"docs-with-change": "off", "promote-merge-mode": "off"})
+    force = CLEAN_WORKFLOW.replace(
+        "          pytest -q\n", "          git push --force origin main\n"
+    )
+    case(
+        "workflow force-pushes main",
+        {**base_files, ".github/workflows/ci.yml": force},
+        pr_event(),
+        lambda rc, out: expect(
+            "protected-refs fires", out, "::error title=standards/protected-refs"
+        ),
+        **{"docs-with-change": "off", "promote-merge-mode": "off"},
+    )
 
     allowed = CLEAN_WORKFLOW.replace(
         "          pytest -q\n",
         "          git push --force origin HEAD:tmp/scratch  # standards-allow: "
-        "protected-refs — disposable branch\n")
-    case("suppression marker is honoured", {**base_files,
-                                            ".github/workflows/ci.yml": allowed},
-         pr_event(),
-         lambda rc, out: expect("suppressed force-push is silent", out,
-                                "standards/protected-refs", present=False),
-         **{"docs-with-change": "off", "promote-merge-mode": "off"})
+        "protected-refs — disposable branch\n",
+    )
+    case(
+        "suppression marker is honoured",
+        {**base_files, ".github/workflows/ci.yml": allowed},
+        pr_event(),
+        lambda rc, out: expect(
+            "suppressed force-push is silent",
+            out,
+            "standards/protected-refs",
+            present=False,
+        ),
+        **{"docs-with-change": "off", "promote-merge-mode": "off"},
+    )
 
     # --- rule 4: versioning -------------------------------------------------------------
-    case("repo declares 1.0.0 without authorization",
-         {**base_files, "VERSION": "1.0.0\n",
-          ".cz.toml": '[tool.commitizen]\nversion = "1.0.0"\n'},
-         pr_event(),
-         lambda rc, out: (
-             expect("version-policy fires", out, "::error title=standards/version-policy"),
-             expect("version-policy cites the label", out, "human-authorized-1x"),
-         ),
-         **{"docs-with-change": "off", "promote-merge-mode": "off"})
+    case(
+        "repo declares 1.0.0 without authorization",
+        {
+            **base_files,
+            "VERSION": "1.0.0\n",
+            ".cz.toml": '[tool.commitizen]\nversion = "1.0.0"\n',
+        },
+        pr_event(),
+        lambda rc, out: (
+            expect(
+                "version-policy fires", out, "::error title=standards/version-policy"
+            ),
+            expect("version-policy cites the label", out, "human-authorized-1x"),
+        ),
+        **{"docs-with-change": "off", "promote-merge-mode": "off"},
+    )
 
-    case("1.0.0 with the human label is allowed",
-         {**base_files, "VERSION": "1.0.0\n",
-          ".cz.toml": '[tool.commitizen]\nversion = "1.0.0"\n'},
-         pr_event(labels=["human-authorized-1x"]),
-         lambda rc, out: expect("label opens the 1.x gate", out,
-                                "standards/version-policy", present=False),
-         **{"docs-with-change": "off", "promote-merge-mode": "off"})
+    case(
+        "1.0.0 with the human label is allowed",
+        {
+            **base_files,
+            "VERSION": "1.0.0\n",
+            ".cz.toml": '[tool.commitizen]\nversion = "1.0.0"\n',
+        },
+        pr_event(labels=["human-authorized-1x"]),
+        lambda rc, out: expect(
+            "label opens the 1.x gate", out, "standards/version-policy", present=False
+        ),
+        **{"docs-with-change": "off", "promote-merge-mode": "off"},
+    )
 
-    case("manifest and .cz.toml disagree",
-         {**base_files, "VERSION": "0.2.0\n"},
-         pr_event(),
-         lambda rc, out: expect("version-drift fires", out, "standards/version-drift"),
-         **{"docs-with-change": "off", "promote-merge-mode": "off"})
+    case(
+        "manifest and .cz.toml disagree",
+        {**base_files, "VERSION": "0.2.0\n"},
+        pr_event(),
+        lambda rc, out: expect("version-drift fires", out, "standards/version-drift"),
+        **{"docs-with-change": "off", "promote-merge-mode": "off"},
+    )
 
     # --- rule 5: exit contract ----------------------------------------------------------
-    soft = CLEAN_WORKFLOW.replace("          pytest -q\n",
-                                  "          cargo geiger --output-format Json || true\n")
-    case("gate swallows its failure", {**base_files, ".github/workflows/ci.yml": soft},
-         pr_event(),
-         lambda rc, out: (
-             expect("exit-contract fires", out, "standards/exit-contract"),
-             expect("exit-contract cites the measurement", out, "qlora-rs #27"),
-         ),
-         **{"exit-contract": "enforce", "docs-with-change": "off",
-            "promote-merge-mode": "off"})
+    soft = CLEAN_WORKFLOW.replace(
+        "          pytest -q\n", "          cargo geiger --output-format Json || true\n"
+    )
+    case(
+        "gate swallows its failure",
+        {**base_files, ".github/workflows/ci.yml": soft},
+        pr_event(),
+        lambda rc, out: (
+            expect("exit-contract fires", out, "standards/exit-contract"),
+            expect("exit-contract cites the measurement", out, "qlora-rs #27"),
+        ),
+        **{
+            "exit-contract": "enforce",
+            "docs-with-change": "off",
+            "promote-merge-mode": "off",
+        },
+    )
 
     setuponly = CLEAN_WORKFLOW.replace(
         "          pytest -q\n",
         "          rustup component add rustfmt clippy 2>/dev/null || true\n"
-        "          pytest -q\n")
-    case("setup line with || true is not a gate", {**base_files,
-                                                   ".github/workflows/ci.yml": setuponly},
-         pr_event(),
-         lambda rc, out: expect("no false positive on rustup", out,
-                                "standards/exit-contract", present=False),
-         **{"exit-contract": "enforce", "docs-with-change": "off",
-            "promote-merge-mode": "off"})
+        "          pytest -q\n",
+    )
+    case(
+        "setup line with || true is not a gate",
+        {**base_files, ".github/workflows/ci.yml": setuponly},
+        pr_event(),
+        lambda rc, out: expect(
+            "no false positive on rustup", out, "standards/exit-contract", present=False
+        ),
+        **{
+            "exit-contract": "enforce",
+            "docs-with-change": "off",
+            "promote-merge-mode": "off",
+        },
+    )
 
     # --- rule 7: scheduled + cancel-in-progress ------------------------------------------
-    sched = CLEAN_WORKFLOW.replace("on:\n  pull_request:\n    branches: [dev]\n",
-                                   "on:\n  schedule:\n    - cron: '0 3 * * 1'\n")
-    case("scheduled workflow cancels itself", {**base_files,
-                                               ".github/workflows/ci.yml": sched},
-         pr_event(),
-         lambda rc, out: (
-             expect("schedule-cancel fires", out,
-                    "::error title=standards/schedule-cancel"),
-             expect("schedule-cancel explains `cancelled` != `failed`", out,
-                    "not `failed`"),
-         ),
-         **{"docs-with-change": "off", "promote-merge-mode": "off"})
+    sched = CLEAN_WORKFLOW.replace(
+        "on:\n  pull_request:\n    branches: [dev]\n",
+        "on:\n  schedule:\n    - cron: '0 3 * * 1'\n",
+    )
+    case(
+        "scheduled workflow cancels itself",
+        {**base_files, ".github/workflows/ci.yml": sched},
+        pr_event(),
+        lambda rc, out: (
+            expect(
+                "schedule-cancel fires", out, "::error title=standards/schedule-cancel"
+            ),
+            expect(
+                "schedule-cancel explains `cancelled` != `failed`", out, "not `failed`"
+            ),
+        ),
+        **{"docs-with-change": "off", "promote-merge-mode": "off"},
+    )
 
     # --- rule 8: python floor -------------------------------------------------------------
     old_py = CLEAN_WORKFLOW.replace('python-version: "3.13"', 'python-version: "3.9"')
-    case("python 3.9 in the matrix", {**base_files, ".github/workflows/ci.yml": old_py},
-         pr_event(),
-         lambda rc, out: expect("python-floor fires", out, "standards/python-floor"),
-         **{"python-floor": "enforce", "docs-with-change": "off",
-            "promote-merge-mode": "off"})
+    case(
+        "python 3.9 in the matrix",
+        {**base_files, ".github/workflows/ci.yml": old_py},
+        pr_event(),
+        lambda rc, out: expect("python-floor fires", out, "standards/python-floor"),
+        **{
+            "python-floor": "enforce",
+            "docs-with-change": "off",
+            "promote-merge-mode": "off",
+        },
+    )
 
     float_py = CLEAN_WORKFLOW.replace('python-version: "3.13"', "python-version: 3.10")
-    case("unquoted 3.10 becomes the float 3.1",
-         {**base_files, ".github/workflows/ci.yml": float_py},
-         pr_event(),
-         lambda rc, out: expect("float python version fires", out,
-                                "parsed as a float"),
-         **{"python-floor": "enforce", "docs-with-change": "off",
-            "promote-merge-mode": "off"})
+    case(
+        "unquoted 3.10 becomes the float 3.1",
+        {**base_files, ".github/workflows/ci.yml": float_py},
+        pr_event(),
+        lambda rc, out: expect("float python version fires", out, "parsed as a float"),
+        **{
+            "python-floor": "enforce",
+            "docs-with-change": "off",
+            "promote-merge-mode": "off",
+        },
+    )
 
     # --- rule 9: conventional title ---------------------------------------------------------
-    case("non-conventional PR title", base_files,
-         pr_event(title="updated some stuff"),
-         lambda rc, out: expect("conventional-title fires", out,
-                                "::error title=standards/conventional-title"),
-         **{"docs-with-change": "off", "promote-merge-mode": "off"})
+    case(
+        "non-conventional PR title",
+        base_files,
+        pr_event(title="updated some stuff"),
+        lambda rc, out: expect(
+            "conventional-title fires",
+            out,
+            "::error title=standards/conventional-title",
+        ),
+        **{"docs-with-change": "off", "promote-merge-mode": "off"},
+    )
 
     # --- driver: a bad mode value must refuse to run, not silently disable a rule ----------
     print("\n== bad mode value refuses to run")

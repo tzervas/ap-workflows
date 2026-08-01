@@ -1,0 +1,291 @@
+# Reusable container image build + push to GHCR for the Mycelium fleet.
+#
+# WHY PODMAN FIRST, NOT docker/build-push-action:
+# The fleet's self-hosted runners are ROOTLESS PODMAN (`[self-hosted, linux,
+# x64, podman]`). They have no Docker daemon and no way to get one — the
+# container sets `no_new_privs`, so a job cannot `sudo` anything into place:
+#
+#     sudo: The "no new privileges" flag is set, which prevents sudo from
+#     running as root.
+#
+# So a Docker-based build action cannot run on the fleet at all. This workflow
+# uses whichever of podman/docker is already present, which makes the SAME
+# caller work on `ubuntu-latest` (docker) and on the fleet (podman) with no
+# change other than runner-labels.
+#
+# WHAT THIS UNBLOCKS:
+# Baking tools into the runner base image instead of installing them per-job.
+# Every `sudo apt-get install <tool>` in a fleet workflow is unfixable on a
+# rootless runner; the durable answer is an image that already carries the tool.
+# That requires somewhere to build and publish images — this is that.
+#
+# Fleet base published as: ghcr.io/tzervas/ap-workflows/runner-base
+# (see image-runner-base.yml). Default timeout-minutes: 45.
+#
+# Sibling of reusable-ci-*.yml; input names follow the same conventions
+# (runner-labels as a JSON array string, timeout-minutes, everything optional).
+#
+# push semantics:
+#   push: false  build only, nothing leaves the runner (the PR default)
+#   push: true   build and push to the registry
+# A pull_request from a fork cannot push regardless — GITHUB_TOKEN is read-only
+# there. The workflow detects that and downgrades to build-only rather than
+# failing late at the push step with a confusing 403.
+name: Reusable Image Build
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: 'Image name without registry, e.g. "tzervas/gha-runner-base". Default: this repository.'
+        required: false
+        type: string
+        default: ''
+      registry:
+        description: 'Container registry host'
+        required: false
+        type: string
+        default: 'ghcr.io'
+      containerfile:
+        description: 'Path to the Containerfile/Dockerfile. Empty = autodetect Containerfile then Dockerfile.'
+        required: false
+        type: string
+        default: ''
+      context:
+        description: 'Build context directory'
+        required: false
+        type: string
+        default: '.'
+      push:
+        description: 'Push after a successful build (false = build only)'
+        required: false
+        type: boolean
+        default: false
+      extra-tags:
+        description: 'Space-separated additional tags, e.g. "latest stable"'
+        required: false
+        type: string
+        default: ''
+      base-image:
+        description: >-
+          Base image to build FROM, passed as the BASE_IMAGE build arg. This is
+          the layering seam: a fleet-level base is published once, and repo- or
+          project-level images override this to build on top of it. Empty leaves
+          whatever the Containerfile defaults to.
+        required: false
+        type: string
+        default: ''
+      build-args:
+        description: 'Newline-separated KEY=VALUE build args'
+        required: false
+        type: string
+        default: ''
+      runner-labels:
+        description: 'JSON array of runner labels, e.g. ["ubuntu-latest"] or ["self-hosted","linux","x64","podman"]'
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+      timeout-minutes:
+        description: 'Job timeout'
+        required: false
+        type: number
+        default: 45
+    outputs:
+      image:
+        description: 'Fully qualified image reference that was built'
+        value: ${{ jobs.build.outputs.image }}
+      digest:
+        description: 'Image digest when pushed, empty when build-only'
+        value: ${{ jobs.build.outputs.digest }}
+      pushed:
+        description: 'true when the image was actually pushed'
+        value: ${{ jobs.build.outputs.pushed }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: Build image
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      digest: ${{ steps.push.outputs.digest }}
+      pushed: ${{ steps.push.outputs.pushed }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Select build engine
+        id: engine
+        run: |
+          set -euo pipefail
+          # podman first: it is what the fleet runners have, and it needs no
+          # daemon. Never install one here — on a rootless runner that is
+          # impossible, and silently degrading to a different engine would make
+          # builds non-reproducible across runner types.
+          if command -v podman >/dev/null 2>&1; then
+            echo "bin=podman" >> "$GITHUB_OUTPUT"
+          elif command -v docker >/dev/null 2>&1; then
+            echo "bin=docker" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::neither podman nor docker is available on this runner"
+            exit 1
+          fi
+          echo "engine: $(cat "$GITHUB_OUTPUT" | sed -n 's/^bin=//p')"
+
+      - name: Resolve image reference and tags
+        id: meta
+        env:
+          REGISTRY: ${{ inputs.registry }}
+          IMAGE_IN: ${{ inputs.image-name }}
+          EXTRA_TAGS: ${{ inputs.extra-tags }}
+        run: |
+          set -euo pipefail
+          NAME="${IMAGE_IN:-${GITHUB_REPOSITORY}}"
+          # Registries reject uppercase; repository names routinely contain it.
+          NAME="$(printf '%s' "$NAME" | tr '[:upper:]' '[:lower:]')"
+          IMAGE="${REGISTRY}/${NAME}"
+
+          SHA_TAG="sha-${GITHUB_SHA::12}"
+          TAGS="$SHA_TAG"
+
+          REF_TAG="$(printf '%s' "${GITHUB_REF_NAME}" | tr -c 'A-Za-z0-9._-' '-')"
+          case "${GITHUB_REF_TYPE}" in
+            tag) [ -n "$REF_TAG" ] && TAGS="$TAGS $REF_TAG" ;;
+            *)   [ -n "$REF_TAG" ] && [ "$REF_TAG" != "$SHA_TAG" ] && TAGS="$TAGS $REF_TAG" ;;
+          esac
+          for t in $EXTRA_TAGS; do TAGS="$TAGS $t"; done
+
+          {
+            echo "image=$IMAGE"
+            echo "tags=$TAGS"
+            echo "primary=${IMAGE}:${SHA_TAG}"
+          } >> "$GITHUB_OUTPUT"
+          printf 'image: %s\ntags: %s\n' "$IMAGE" "$TAGS"
+
+      - name: Locate Containerfile
+        id: file
+        env:
+          CF: ${{ inputs.containerfile }}
+          CTX: ${{ inputs.context }}
+        run: |
+          set -euo pipefail
+          if [ -n "$CF" ]; then
+            [ -f "$CF" ] || { echo "::error::containerfile not found: $CF"; exit 1; }
+            echo "path=$CF" >> "$GITHUB_OUTPUT"
+          elif [ -f "$CTX/Containerfile" ]; then
+            echo "path=$CTX/Containerfile" >> "$GITHUB_OUTPUT"
+          elif [ -f "$CTX/Dockerfile" ]; then
+            echo "path=$CTX/Dockerfile" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::no Containerfile or Dockerfile in $CTX (set containerfile:)"
+            exit 1
+          fi
+
+      - name: Decide whether a push is actually possible
+        id: gate
+        env:
+          WANT_PUSH: ${{ inputs.push }}
+        run: |
+          set -euo pipefail
+          # A fork PR gets a read-only GITHUB_TOKEN, so a push would 403 at the
+          # very end of an expensive build. Decide up front and say why.
+          if [ "$WANT_PUSH" != "true" ]; then
+            echo "push=false" >> "$GITHUB_OUTPUT"
+            echo "build-only: push not requested"
+          elif [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && \
+               [ "${{ github.event.pull_request.head.repo.fork }}" = "true" ]; then
+            echo "push=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::fork pull request — GITHUB_TOKEN is read-only, building without push"
+          else
+            echo "push=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Log in to ${{ inputs.registry }}
+        if: steps.gate.outputs.push == 'true'
+        env:
+          ENGINE: ${{ steps.engine.outputs.bin }}
+          REGISTRY: ${{ inputs.registry }}
+          # GITHUB_TOKEN with packages:write is enough for GHCR. Deliberately
+          # NOT one of the fleet PATs — see TOKENS.md; a registry push does not
+          # need cross-repo scope, and the narrower credential is the point.
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$TOKEN" | "$ENGINE" login "$REGISTRY" \
+            --username "${GITHUB_ACTOR}" --password-stdin
+          echo "logged in to $REGISTRY"
+
+      - name: Build
+        env:
+          ENGINE: ${{ steps.engine.outputs.bin }}
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          CFILE: ${{ steps.file.outputs.path }}
+          CTX: ${{ inputs.context }}
+          BUILD_ARGS: ${{ inputs.build-args }}
+          BASE_IMAGE: ${{ inputs.base-image }}
+        run: |
+          set -euo pipefail
+          args=(build -f "$CFILE")
+          for t in $TAGS; do args+=(-t "${IMAGE}:${t}"); done
+          # The layering seam: a repo-level image overrides this to build on top
+          # of the fleet base rather than duplicating its contents.
+          [ -n "$BASE_IMAGE" ] && args+=(--build-arg "BASE_IMAGE=${BASE_IMAGE}")
+          while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            args+=(--build-arg "$line")
+          done <<< "$BUILD_ARGS"
+          args+=("$CTX")
+          echo "+ $ENGINE ${args[*]}"
+          "$ENGINE" "${args[@]}"
+
+      - name: Push
+        id: push
+        env:
+          ENGINE: ${{ steps.engine.outputs.bin }}
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          PRIMARY: ${{ steps.meta.outputs.primary }}
+          DO_PUSH: ${{ steps.gate.outputs.push }}
+        run: |
+          set -euo pipefail
+          if [ "$DO_PUSH" != "true" ]; then
+            {
+              echo "pushed=false"
+              echo "digest="
+            } >> "$GITHUB_OUTPUT"
+            echo "build-only run — nothing pushed"
+            exit 0
+          fi
+          for t in $TAGS; do
+            echo "pushing ${IMAGE}:${t}"
+            "$ENGINE" push "${IMAGE}:${t}"
+          done
+          DIGEST="$("$ENGINE" inspect --format '{{index .RepoDigests 0}}' "$PRIMARY" 2>/dev/null || true)"
+          {
+            echo "pushed=true"
+            echo "digest=${DIGEST}"
+          } >> "$GITHUB_OUTPUT"
+          echo "pushed ${IMAGE} (${TAGS})"
+
+      - name: Summary
+        if: always()
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          PUSHED: ${{ steps.push.outputs.pushed }}
+          ENGINE: ${{ steps.engine.outputs.bin }}
+        run: |
+          {
+            echo "### Image build"
+            echo
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| image | \`${IMAGE:-?}\` |"
+            echo "| tags | \`${TAGS:-?}\` |"
+            echo "| engine | \`${ENGINE:-?}\` |"
+            echo "| pushed | \`${PUSHED:-false}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

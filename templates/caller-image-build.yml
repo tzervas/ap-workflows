@@ -1,0 +1,74 @@
+# Component-repo image build. Install as .github/workflows/image.yml
+#
+# Same shape as templates/caller-ci-shell.yml. See that file for the @v0.1
+# moving-tag and tiering rationale.
+#
+#   trigger        push?   runner            notes
+#   -------------  ------  ----------------  ---------------------------------
+#   pull_request   no      github-hosted     build only — proves it still builds
+#   push to main   yes     self-hosted fleet publishes :latest and :sha-…
+#   tag v*         yes     self-hosted fleet publishes the version tag too
+#
+# PRs never push. That is the default rather than a policy bolted on top: a
+# build that cannot publish is safe to run on untrusted input, and a fork PR
+# gets a read-only GITHUB_TOKEN anyway (the reusable workflow detects that and
+# downgrades instead of failing at the push step).
+#
+# THE RUNNER-IMAGE CASE THIS EXISTS FOR:
+# The fleet's runners are rootless podman with no_new_privs, so a workflow can
+# never `sudo apt-get install` a missing tool — the durable fix is a base image
+# that already carries it. Point this at the Containerfile for that image and
+# the tool problem stops being a per-workflow workaround.
+name: image
+
+on:
+  workflow_dispatch:
+    inputs:
+      push:
+        description: 'Push to the registry'
+        type: boolean
+        default: false
+      runner:
+        description: 'Where to run'
+        type: choice
+        options: [github-hosted, self-hosted-fleet]
+        default: self-hosted-fleet
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    uses: tzervas/ap-workflows/.github/workflows/reusable-image-build.yml@v0.1
+    with:
+      # Defaults to this repository's name; set explicitly when the image is not
+      # named after the repo (e.g. a runner base image built from a tools repo).
+      # image-name: 'tzervas/gha-runner-base'
+
+      # Never push from a pull_request; push on main and on version tags.
+      push: >-
+        ${{ inputs.push
+            || (github.event_name == 'push'
+                && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) }}
+
+      # Build on the fleet by default: the image is consumed by podman runners,
+      # so building it with the same engine avoids surprises. PRs run hosted.
+      runner-labels: >-
+        ${{ (github.event_name == 'pull_request' || inputs.runner == 'github-hosted')
+            && '["ubuntu-latest"]'
+            || '["self-hosted","linux","x64","podman"]' }}
+
+      # `latest` only from main — a tag build should not silently move it.
+      extra-tags: >-
+        ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main')
+            && 'latest' || '' }}

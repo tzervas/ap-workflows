@@ -47,7 +47,7 @@ jobs:
     runs-on: ${{ fromJSON(inputs.runner-labels) }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Secret history needs full depth; tree-only scans do not pay for it.
           fetch-depth: ${{ inputs.full-history && 0 || 1 }}
@@ -87,7 +87,7 @@ jobs:
     runs-on: ${{ fromJSON(inputs.runner-labels) }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Trivy fs
         run: |
