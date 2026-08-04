@@ -1,0 +1,162 @@
+# Fleet runner image for RUST jobs: runner-base + a pinned Rust toolchain.
+#
+# WHY THIS IS A SEPARATE IMAGE AND NOT MORE apt LINES IN runner-base
+# runner-base states the rule explicitly: "Language toolchains (rustc, cargo,
+# ruff, python venvs, go, …) belong in derived images that build FROM this base
+# via the reusable workflow's base-image input — not here. This layer stays
+# fleet-common and slow-moving." A Rust toolchain is ~1.4 GB and moves on its own
+# release cadence; putting it in the common base would make every non-Rust job in
+# the fleet pay for it and would couple base rebuilds to Rust releases.
+#
+# WHY THIS IMAGE HAS TO EXIST AT ALL — the measured gap
+# The fleet's two images were COMPLEMENTARY, and neither could run a mycelium CI
+# job end to end. Measured 2026-08-04 by running each image:
+#
+#   ghcr.io/tzervas/ap-workflows/runner-base:main
+#       HAVE gh trivy sops age myc-check shellcheck jq python3+yaml git curl
+#       MISS cargo rustc            <- cannot build or test any Rust crate
+#   localhost/scribe-cpu-build:dev  (what GHA_IMAGE actually pointed @cpu at)
+#       HAVE cargo rustc shellcheck jq python3+yaml git curl
+#       MISS gh trivy sops age myc-check
+#
+# That gap is what made jobs reach for the network mid-run (`gh: command not
+# found` on the capability-matrix workflow was this, not a runner outage). Under
+# the fleet's egress posture — deny by default, allowances rare and explicit —
+# the fix is to make ONE image satisfy the whole job, so no step has to fetch.
+#
+# The base is DIGEST-pinned, not tag-pinned. `:main` moves whenever runner-base
+# rebuilds, which would silently change the toolchain floor under every Rust job.
+ARG BASE_IMAGE=ghcr.io/tzervas/ap-workflows/runner-base@sha256:fdb3a06f75efaa0bbae04b24a1b2f225c6ede5a15b5db3ed92e53a98e10df1c5
+
+# Deliberately the SAME pin runner-base already uses to build myc-check, so the
+# fleet has exactly one Rust version rather than two that drift apart.
+ARG RUST_IMAGE=rust:1.96.1-bookworm@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663
+
+
+# ── stage: assemble the toolchain, including the musl target ─────────────────
+# The musl std is added HERE rather than in the final stage so the download
+# happens inside a stage whose network use is expected, and so the final image
+# needs no network to have a working `--target x86_64-unknown-linux-musl`.
+# musl matters because the release pipeline ships static binaries: a pure-Rust
+# dependency tree links static with no cross C toolchain, which is how `myc`
+# avoids the glibc-forward-but-not-backward problem on older hosts.
+FROM ${RUST_IMAGE} AS rust-toolchain
+
+ENV CARGO_TERM_COLOR=never
+
+# clippy and rustfmt are components, not crates — a job cannot `cargo install`
+# them, and reusable-ci-rust.yml FAILS rather than skips when a requested tool is
+# missing (same contract as shellcheck in the base).
+#
+# DO NOT add `rustup component remove rust-docs` here. It looks like an easy few
+# hundred MB, but it is a measured no-op: the upstream rust image already ships the
+# minimal profile. `rustup component list --installed` in rust:1.96.1-bookworm
+# returns exactly cargo, rust-std-x86_64-unknown-linux-gnu and rustc — there are no
+# docs to delete, and building with the removal changed the image size not at all
+# (1.88 GB either way).
+#
+# Where the size actually is, measured inside the built image:
+#   /usr/local/rustup  834M   (musl std 219M + gnu std 178M + rustc/toolchain)
+#   /usr/local/cargo    20M
+# Both target stdlibs are load-bearing — gnu for `cargo test`, musl for the static
+# release binaries — so there is nothing here worth trimming. Shrinking an image by
+# deleting toolchain pieces a job might need trades a fast pull for a mid-job
+# failure, which is the wrong trade.
+RUN set -eu; \
+    rustup target add x86_64-unknown-linux-musl; \
+    rustup component add clippy rustfmt; \
+    rustc --version; \
+    cargo --version
+
+
+FROM ${BASE_IMAGE}
+
+# ── the C toolchain is NOT optional ──────────────────────────────────────────
+# Measured on runner-base: cc, gcc, ld, musl-gcc and pkg-config are ALL absent.
+# rustc shells out to `cc` to link, so a copied-in cargo/rustc without these
+# produces a toolchain that compiles and then fails at the link step — the worst
+# failure shape, because `rustc --version` looks perfectly healthy in a smoke
+# test. The build-time gate at the bottom of this file link-tests on purpose.
+#
+#   gcc, libc6-dev   the default x86_64-unknown-linux-gnu linker path
+#   musl-tools       provides musl-gcc; needed because the musl linker is
+#                    invoked BY NAME even though the dep tree is pure Rust
+#   pkg-config       cheap, and its absence surfaces as an inscrutable build.rs
+#                    failure in any crate that probes for a system library
+#   file             asserting a release binary is STATIC is a real gate in this
+#                    train (runner-base's own myc-check stage does it, and the myc
+#                    release pipeline does it). `file` ships in the rust:bookworm
+#                    builder image but NOT in ubuntu:24.04, so without it here the
+#                    assertion fails with "file: not found" and reads as "the
+#                    binary is not static" — a false negative on a security-
+#                    relevant check. Measured: this exact failure broke the first
+#                    build of this image.
+#
+# libssl-dev is deliberately NOT installed: this train is rustls-first, and
+# pulling in OpenSSL headers would invite native-TLS linkage by accident. A crate
+# that genuinely needs it should say so in a derived image of its own.
+RUN apt-get update -qq \
+    && apt-get install -y -qq --no-install-recommends \
+        gcc \
+        libc6-dev \
+        musl-tools \
+        pkg-config \
+        file \
+    && rm -rf /var/lib/apt/lists/*
+
+# Match the official rust image's layout so anything that hardcodes these paths
+# behaves identically here.
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH \
+    CARGO_TERM_COLOR=never
+
+COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
+COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
+
+# ── CARGO_HOME must be writable by whatever uid the job runs as ──────────────
+# Copied paths land root-owned. Cargo writes its registry index and package cache
+# into CARGO_HOME, so a job running as a non-root uid — the normal case under
+# rootless podman — fails on the first dependency fetch with a permission error
+# that reads like a network problem. The official rust image solves it the same
+# way. This is a build image, not a multi-tenant host: the uid is not a
+# security boundary here, so world-writable is the correct trade.
+RUN chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME"
+
+# ── build-time proof, not decoration ────────────────────────────────────────
+# Everything below must hold at BUILD time so a broken layer fails here rather
+# than mid-job an hour later. In particular this LINKS a binary for both targets:
+# version output alone would not have caught the missing-cc case above.
+#
+# Comments stay OUT of the RUN continuation on purpose — comment handling inside
+# a continued instruction is builder-dependent, and if `#` reaches the shell it
+# comments out the remainder of the joined line, silently discarding the checks.
+RUN set -eu; \
+    rustc --version; \
+    cargo --version; \
+    cargo clippy --version; \
+    cargo fmt --version; \
+    rustup target list --installed | grep -qx x86_64-unknown-linux-musl \
+      || { echo "musl target missing from the copied toolchain"; exit 1; }; \
+    for t in gh trivy sops age myc-check shellcheck jq python3 git curl; do \
+      command -v "$t" >/dev/null 2>&1 \
+        || { echo "base tool lost during derivation: $t"; exit 1; }; \
+    done; \
+    python3 -c 'import yaml' \
+      || { echo "python3-yaml lost during derivation"; exit 1; }; \
+    mkdir -p /tmp/linkprobe/src; \
+    printf 'fn main(){println!("ok");}\n' > /tmp/linkprobe/src/main.rs; \
+    printf '[package]\nname="linkprobe"\nversion="0.0.0"\nedition="2021"\n' \
+      > /tmp/linkprobe/Cargo.toml; \
+    cd /tmp/linkprobe; \
+    cargo build --quiet --release; \
+    ./target/release/linkprobe | grep -qx ok \
+      || { echo "gnu target built but does not run"; exit 1; }; \
+    cargo build --quiet --release --target x86_64-unknown-linux-musl; \
+    command -v file >/dev/null 2>&1 \
+      || { echo "cannot verify static linkage: \`file\` is missing"; exit 1; }; \
+    file target/x86_64-unknown-linux-musl/release/linkprobe | grep -q 'static' \
+      || { echo "musl target did not link STATIC"; exit 1; }; \
+    cd /; \
+    rm -rf /tmp/linkprobe; \
+    echo "runner-rust: toolchain links for gnu and static-musl, base tools intact"
