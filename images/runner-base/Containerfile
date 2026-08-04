@@ -39,6 +39,8 @@
 # GO_IMAGE digest is the bookworm image config (linux/amd64) as of sec-20260728-high.
 # BASE_IMAGE index digest for multi-arch ubuntu:24.04 (Docker Hub, as of sec-20260728).
 ARG GO_IMAGE=golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651
+# RUST_IMAGE is build-only, like GO_IMAGE. Digest-pinned for the same reason.
+ARG RUST_IMAGE=rust:1.96.1-bookworm@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663
 ARG BASE_IMAGE=ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
 
 FROM ${GO_IMAGE} AS go-tools
@@ -74,6 +76,58 @@ RUN set -eu; \
     /out/trivy --version
 
 # Final runtime image (fleet runner base). BASE_IMAGE ARG is declared globally above.
+# ── myc-check ────────────────────────────────────────────────────────────────
+# WHY THIS IS IN THE FLEET BASE
+# ap-workflows/.github/workflows/reusable-ci-mycelium.yml deliberately refuses to
+# install a toolchain: "there is no myc-check release artifact to pin, so inventing
+# a download URL would be a guess dressed as infrastructure. The runner image must
+# provide it." It hard-errors when myc-check is absent rather than skipping,
+# because "skipping would report a checker pass that never ran". So the *-myc train
+# cannot have a real check until this binary ships here.
+#
+# What it replaces: 45 repos currently run a job literally named `placeholder`
+# whose two steps are `ls -la lib || true` and an `echo`. Neither can fail, so
+# they publish green while asserting nothing. Measured against mycelium-core-myc,
+# a real myc-check run returns exit 3 with 13 findings across 19 files.
+#
+# Built static (musl) so it needs no runtime deps in the final image and cannot
+# break on a glibc bump — verified locally: `ldd` reports "statically linked",
+# 3.49 MB. The dependency tree is pure Rust, so musl needs no cross C toolchain,
+# but musl-tools is installed anyway because the linker is invoked by name.
+FROM ${RUST_IMAGE} AS myc-tools
+
+# Pin the exact source revision. A floating clone would silently change what the
+# fleet's checker enforces between image builds.
+ARG MYC_CHECK_REPO=https://github.com/tzervas/mycelium-check.git
+ARG MYC_CHECK_REV=b3ddd0dd2803957959453972a7a6d86a470cf1c9
+
+ENV CARGO_TERM_COLOR=never
+
+# No --locked: Cargo.lock is deliberately not tracked across this train, because the
+# propagation tool advances `rev =` pins fleet-wide and invalidates every committed
+# lockfile at once. MYC_CHECK_REV above is the reproducibility anchor instead.
+#
+# The final `file | grep -q static` is a hard gate, not decoration: a dynamically
+# linked binary labelled static would pass this build and only fail later on a
+# runner, mid-job, where the cause is far less obvious.
+#
+# Comments stay OUT of the RUN continuation on purpose — comment handling inside a
+# continued instruction is builder-dependent, and if `#` reaches the shell it
+# comments out the remainder of the joined line, silently discarding the build.
+RUN set -eu; \
+    apt-get update -qq; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends musl-tools; \
+    rm -rf /var/lib/apt/lists/*; \
+    rustup target add x86_64-unknown-linux-musl; \
+    git clone "${MYC_CHECK_REPO}" /src/mycelium-check; \
+    cd /src/mycelium-check; \
+    git checkout --quiet "${MYC_CHECK_REV}"; \
+    cargo build --release --target x86_64-unknown-linux-musl --bin myc-check; \
+    mkdir -p /out; \
+    install -m 0755 target/x86_64-unknown-linux-musl/release/myc-check /out/myc-check; \
+    file /out/myc-check | grep -q 'static' || { echo "myc-check is NOT static"; exit 1; }
+
+
 FROM ${BASE_IMAGE}
 
 # NO `SHELL ["/bin/bash", "-o", "pipefail", "-c"]` HERE — it does not work, and
@@ -140,6 +194,7 @@ RUN apt-get update -qq \
 # shows this is not the stock upstream release binary.
 COPY --from=go-tools /out/gh /usr/local/bin/gh
 COPY --from=go-tools /out/trivy /usr/local/bin/trivy
+COPY --from=myc-tools /out/myc-check /usr/local/bin/myc-check
 RUN set -eu; \
     gh --version; \
     trivy --version
