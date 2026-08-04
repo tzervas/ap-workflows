@@ -102,7 +102,28 @@ RUN apt-get update -qq \
         musl-tools \
         pkg-config \
         file \
+        libicu74 \
+        libkrb5-3 \
+        zlib1g \
     && rm -rf /var/lib/apt/lists/*
+
+# ── the actions/runner runtime deps are NOT optional for a work image ────────
+# actions/runner is a .NET 6 application. On a minimal ubuntu:24.04 it starts,
+# registers, and then dies — the container log is exactly:
+#
+#   runner: registering runner name=homelab-cpu-w0 ephemeral=true
+#   Libicu's dependencies is missing for Dotnet Core 6.0
+#   Execute sudo ./bin/installdependencies.sh to install any missing Dotnet Core 6.0 dependencies.
+#
+# followed by exit 1. The pool then reaps the ephemeral container, so `podman logs`
+# after the fact returns "no such container" and the failure looks like a scheduling
+# problem rather than a missing library. It took catching the container mid-life to see
+# it. libicu74 is the ubuntu:24.04 ICU version; libkrb5-3 and zlib1g are the other two
+# packages actions/runner's own installdependencies.sh requires. The image cannot host
+# a runner without these, which is the entire point of a work image.
+#
+# NOTE: runner-base has the same gap. Any work image derived from it will die the same
+# way. Fixing it in the base would fix it fleet-wide and is worth doing separately.
 
 # Match the official rust image's layout so anything that hardcodes these paths
 # behaves identically here.
@@ -123,6 +144,30 @@ COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
 # security boundary here, so world-writable is the correct trade.
 RUN chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME"
 
+# ── a uid-1001 user with a WRITABLE HOME, or the runner cannot start ─────────
+# The fleet launches work containers as `GHA_RUNNER_USER=1001:1001`. ubuntu:24.04 has
+# no uid 1001, and the consequence is not a clean error — it is:
+#
+#   $ podman run --user 1001:1001 runner-rust ...
+#   uid=1001(homelab-deploy) gid=1001(1001)      <- name leaks in from the HOST
+#   HOME=/                                        <- no home for an unknown uid
+#   touch: cannot touch '//probe': Permission denied
+#
+# actions/runner needs a writable HOME, so it exits 1 during startup and the pool
+# reaps the ephemeral container before anyone can read its logs. Measured: a `rust`
+# labelled job routed correctly, pulled this image, span up, and died exactly here.
+#
+# `builder` at 1001:1001 matches the convention the working scribe-cpu-build image
+# already uses, so anything that assumes that layout keeps working.
+#
+# NOTE: runner-base has this same latent gap — it also lacks uid 1001 — so any other
+# derived work image will hit this too. Fixing it here unblocks Rust jobs; fixing it
+# in the base would fix it for everyone and is worth doing separately.
+RUN set -eu; \
+    groupadd -g 1001 builder; \
+    useradd -u 1001 -g 1001 -m -d /home/builder -s /bin/bash builder; \
+    test -w /home/builder || { echo "/home/builder is not writable"; exit 1; }
+
 # ── build-time proof, not decoration ────────────────────────────────────────
 # Everything below must hold at BUILD time so a broken layer fails here rather
 # than mid-job an hour later. In particular this LINKS a binary for both targets:
@@ -131,6 +176,13 @@ RUN chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME"
 # Comments stay OUT of the RUN continuation on purpose — comment handling inside
 # a continued instruction is builder-dependent, and if `#` reaches the shell it
 # comments out the remainder of the joined line, silently discarding the checks.
+#
+# The uid-1001 checks call cargo by ABSOLUTE PATH deliberately. `su -s /bin/sh -c`
+# resets PATH, so a bare `cargo` there reports "not found" even though the real
+# container works fine — podman applies the image's ENV PATH, which includes
+# /usr/local/cargo/bin. That false negative failed a build once already. What
+# actually needs proving is that uid 1001 can EXECUTE the binary (permissions),
+# not that su happens to reconstruct our PATH.
 RUN set -eu; \
     rustc --version; \
     cargo --version; \
@@ -159,4 +211,12 @@ RUN set -eu; \
       || { echo "musl target did not link STATIC"; exit 1; }; \
     cd /; \
     rm -rf /tmp/linkprobe; \
-    echo "runner-rust: toolchain links for gnu and static-musl, base tools intact"
+    su builder -s /bin/sh -c 'test -n "$HOME" && [ "$HOME" != "/" ] && touch "$HOME/.writeprobe" && rm -f "$HOME/.writeprobe"' \
+      || { echo "uid 1001 (builder) has no writable HOME — actions/runner will exit 1 at startup"; exit 1; }; \
+    su builder -s /bin/sh -c '/usr/local/cargo/bin/cargo --version >/dev/null' \
+      || { echo "uid 1001 cannot EXECUTE cargo (permissions)"; exit 1; }; \
+    ldconfig -p | grep -q libicuuc \
+      || { echo "libicu missing — actions/runner (.NET 6) will register then exit 1"; exit 1; }; \
+    ldconfig -p | grep -q libkrb5 \
+      || { echo "libkrb5 missing — actions/runner dependency"; exit 1; }; \
+    echo "runner-rust: toolchain links for gnu and static-musl, base tools intact, uid 1001 has a writable HOME"
