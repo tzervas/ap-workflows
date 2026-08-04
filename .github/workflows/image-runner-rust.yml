@@ -1,0 +1,82 @@
+# Build and publish the fleet RUST runner image (runner-base + Rust toolchain).
+#
+# Published ref (when push is true):
+#   ghcr.io/tzervas/ap-workflows/runner-rust
+# Tags: sha-<12>, branch/tag name, and `latest` on main pushes.
+#
+# This exists because the fleet's two images were complementary and neither could
+# run a mycelium CI job end to end — runner-base has gh/trivy/sops/myc-check but
+# no cargo, and the image @cpu actually used has cargo but none of the CI tooling.
+# Jobs papered over that by fetching at run time, which the fleet's egress posture
+# (deny by default) forbids. See images/runner-rust/Containerfile for the measured
+# gap table.
+#
+# Consumers select this image by RUNNER LABEL rather than by editing every
+# workflow; see docs/ for the label-gating note added alongside this file.
+#
+# Push path mirrors image-runner-base: PR / workflow_dispatch default push:false
+# (build only); main and v* tags push to GHCR.
+name: image-runner-rust
+
+on:
+  workflow_dispatch:
+    inputs:
+      push:
+        description: 'Push to GHCR'
+        type: boolean
+        default: false
+      runner:
+        description: 'Where to build'
+        type: choice
+        options: [github-hosted, self-hosted-fleet]
+        default: github-hosted
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'images/runner-rust/**'
+      - '.github/workflows/image-runner-rust.yml'
+      - '.github/workflows/reusable-image-build.yml'
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'images/runner-rust/**'
+      - '.github/workflows/image-runner-rust.yml'
+      - '.github/workflows/reusable-image-build.yml'
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: image-runner-rust-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    uses: ./.github/workflows/reusable-image-build.yml
+    with:
+      image-name: 'tzervas/ap-workflows/runner-rust'
+      containerfile: 'images/runner-rust/Containerfile'
+      context: 'images/runner-rust'
+      push: >-
+        ${{ inputs.push
+            || (github.event_name == 'push'
+                && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) }}
+      # Built on GitHub-hosted by default, for the same reason image-runner-base
+      # is: the fleet runners are the CONSUMERS of this image, so building it
+      # there would mean the image that closes the tooling gap can only be built
+      # by a runner that already has the tools. This is the documented bootstrap
+      # exception to "all runs on self-hosted", not a drift from it.
+      runner-labels: >-
+        ${{ inputs.runner == 'self-hosted-fleet'
+            && '["self-hosted","linux","x64","podman"]'
+            || '["ubuntu-latest"]' }}
+      # BASE_IMAGE is digest-pinned in the Containerfile on purpose, so it is NOT
+      # passed here. Overriding it from the workflow would reintroduce the silent
+      # toolchain-floor drift the pin exists to prevent; bump the ARG in a commit
+      # that can be reviewed and reverted instead.
+      extra-tags: >-
+        ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main')
+             || (github.event_name == 'workflow_dispatch' && inputs.push && github.ref == 'refs/heads/main'))
+            && 'latest' || '' }}
