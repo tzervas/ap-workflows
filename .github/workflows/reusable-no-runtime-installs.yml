@@ -1,0 +1,146 @@
+# Gate: a job must not install things at run time.
+#
+# WHY A GATE AND NOT A DOC
+# Egress is deny-by-default on these runners and `sudo apt-get` is impossible in-job
+# (rootless + no_new_privs), so a runtime install does not "usually work" — it fails, or it
+# succeeds only because egress happened to be open, which is worse because it is a latent
+# break. The durable answer is to bake dependencies into a work-image tier and let layer
+# caching do the heavy lifting once.
+#
+# A documented rule gets ignored. Measured on this fleet: a job-time toolchain probe is what
+# actually caught a missing ffmpeg, hours after the rule was written down and agreed. So this
+# is enforcement, with policy/runtime-fetch-allowlist.txt as the reviewable exception set.
+#
+# WHAT IT DOES NOT DO
+# It does not scan job LOGS or run anything — it is a static read of workflow files. It
+# cannot catch an install hidden inside a script the workflow calls. That is a deliberate
+# scope limit, not an oversight: a cheap check that runs on every PR beats a thorough one
+# that never ships. Pair it with an image-side toolchain probe, which is what catches the
+# rest.
+name: reusable-no-runtime-installs
+
+on:
+  workflow_call:
+    inputs:
+      workflow-dir:
+        description: 'Directory of workflow files to scan'
+        required: false
+        type: string
+        default: '.github/workflows'
+      allowlist:
+        description: 'Path to the runtime-fetch allowlist. Empty = use this repo''s policy/ copy.'
+        required: false
+        type: string
+        default: ''
+      runner-labels:
+        description: 'JSON array of runner labels'
+        required: false
+        type: string
+        default: '["self-hosted","linux","x64","podman"]'
+      warn-only:
+        description: 'Report findings without failing. For adopting the gate on a repo that has violations today.'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: no-runtime-installs
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan workflows for install-shaped commands
+        env:
+          WF_DIR: ${{ inputs.workflow-dir }}
+          ALLOW_IN: ${{ inputs.allowlist }}
+          WARN_ONLY: ${{ inputs.warn-only }}
+        run: |
+          set -uo pipefail
+          test -d "$WF_DIR" || { echo "::notice::no $WF_DIR — nothing to scan"; exit 0; }
+
+          ALLOW="$ALLOW_IN"
+          if [ -z "$ALLOW" ]; then ALLOW=policy/runtime-fetch-allowlist.txt; fi
+          if [ ! -f "$ALLOW" ]; then
+            echo "::error::allowlist not found at $ALLOW — refusing to pass a gate with no policy to check against"
+            exit 1
+          fi
+
+          # Build the permitted-substring set. `grep -c` prints 0 AND exits 1, so count with
+          # `grep -o | wc -l` instead — that idiom has produced "0\n0" and broken arithmetic
+          # here before.
+          grep -vE '^#|^$' "$ALLOW" | sed -E 's/^(cmd|host)[[:space:]]+//' > /tmp/allow.pats
+          echo "allowlist rules: $(grep -o '.' /tmp/allow.pats | wc -l | tr -d ' ') chars over $(grep -c '' /tmp/allow.pats) lines"
+
+          # TWO CLASSES, and conflating them makes the gate useless. Dogfooding this
+          # against ap-workflows and vidoxfx proved it:
+          #
+          #   TOOLCHAIN installs  -> FAIL. A tool the job needs in order to run at all
+          #     (apt-get install, pip install <tool>, rustup component add, curl|sh). These
+          #     belong in a work-image tier: bake once, redistribute as a cached layer.
+          #
+          #   PROJECT-DEP installs -> ALLOW. The project's own dependencies, resolved from a
+          #     lockfile the repo owns (npm ci, uv pip install -r requirements.txt). These
+          #     change per commit and cannot be baked per-project. `cargo build` fetching
+          #     crates is the same category. Flagging these would flag every Node and Python
+          #     job in the fleet -- all 10 findings in vidoxfx were `npm ci`, in a run that
+          #     PASSED.
+          TOOLCHAIN='apt-get +install|apt +install|yum +install|dnf +install|apk +add'
+          TOOLCHAIN="$TOOLCHAIN"'|rustup +toolchain +install|rustup +component +add'
+          TOOLCHAIN="$TOOLCHAIN"'|npm +i +-g|npm +install +-g|yarn +global +add|pnpm +add +-g'
+          TOOLCHAIN="$TOOLCHAIN"'|cargo +install|go +install|gem +install'
+          TOOLCHAIN="$TOOLCHAIN"'|curl [^|]*\| *(ba)?sh|wget [^|]*\| *(ba)?sh'
+          # pip installing a NAMED tool is a toolchain install; `-r requirements.txt` is not.
+          TOOLCHAIN="$TOOLCHAIN"'|(pip3?|python3? +-m +pip|uv +pip) +install +(--[a-z-]+ +)*[a-zA-Z]'
+
+          PROJECTDEP='npm +ci|npm +install *$|npm +install +[^-]|(pip3?|python3? +-m +pip|uv +pip) +install +(--[a-z-]+ +)*-r'
+
+          violations=0
+          while IFS= read -r f; do
+            # -n gives file:line so a finding is actionable rather than "somewhere in here".
+            while IFS= read -r hit; do
+              LN=${hit%%:*}
+              TXT=${hit#*:}
+              ok=0
+              while IFS= read -r pat; do
+                [ -n "$pat" ] || continue
+                case "$TXT" in *"$pat"*) ok=1; break ;; esac
+              done < /tmp/allow.pats
+              # project-dependency installs are legitimate work, not a toolchain install
+              if printf '%s' "$TXT" | grep -qE "$PROJECTDEP"; then ok=1; fi
+              if [ "$ok" = "1" ]; then
+                echo "  allowed  $f:$LN  $(printf '%s' "$TXT" | cut -c1-90)"
+              else
+                echo "::error file=$f,line=$LN::runtime install not on the allowlist: $(printf '%s' "$TXT" | cut -c1-120)"
+                violations=$((violations+1))
+              fi
+            done < <(sed -E 's/(^|[[:space:]])#.*$//' "$f" | grep -nE "$TOOLCHAIN" 2>/dev/null)
+          done < <(find "$WF_DIR" -type f \( -name '*.yml' -o -name '*.yaml' \))
+
+          echo
+          echo "violations: $violations"
+          if [ "$violations" -eq 0 ]; then
+            echo "no unallowlisted runtime installs"
+            exit 0
+          fi
+          cat <<'NOTE'
+          Each finding above installs something while a job is running. On this fleet that is
+          not a convenience — egress is deny-by-default and sudo apt-get cannot work, so it
+          fails or it only passes when egress happens to be open.
+
+          Fix by baking the dependency into a work-image tier (see ap-fleet-work-images:
+          fleet-core -> fleet-ops -> fleet-rust/fleet-node/fleet-media) so the heavy lifting
+          happens once and is redistributed as a cached layer.
+
+          If it genuinely must be fetched at run time, add a justified rule to the allowlist
+          and say in the PR why it cannot be satisfied at image-build time.
+          NOTE
+          if [ "$WARN_ONLY" = "true" ]; then
+            echo "::warning::warn-only mode — not failing, but these must be fixed"
+            exit 0
+          fi
+          exit 1

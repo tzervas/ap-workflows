@@ -1,0 +1,45 @@
+# RUNTIME FETCH ALLOWLIST — the ONLY things a job may pull from the network at run time.
+#
+# Egress on these runners is DENY-BY-DEFAULT, and `sudo apt-get` is impossible in-job
+# (rootless podman + no_new_privs). Anything a job needs should be baked into a work image
+# via a `FROM` tier and layer-cached, so the heavy lifting happens once and is redistributed
+# rather than repeated per job.
+#
+# This file is the enumerated exception set. It exists because "no runtime installs" is only
+# real if it is machine-enforced: a documented rule gets ignored, a gate does not. The gate
+# is .github/workflows/reusable-no-runtime-installs.yml, which FAILS on any install-shaped
+# command in a workflow unless it matches a rule here.
+#
+# FORMAT: one rule per line, `<kind> <pattern>` where kind is one of
+#   cmd    an exact-ish command substring permitted anywhere
+#   host   a hostname permitted as a fetch target
+# Lines starting with # and blank lines are ignored.
+#
+# ADDING A RULE IS A REVIEWABLE ACT. Justify it in the PR: say why it cannot be satisfied
+# at image-build time instead. Per the owner's standing policy, allowances should be "the
+# rare case and explicit and necessary".
+
+# --- repo content: this is what a job is SUPPOSED to fetch ---------------------
+cmd actions/checkout
+host github.com
+host api.github.com
+host objects.githubusercontent.com
+
+# --- prebuilt release artifacts, not built-from-source at job time ------------
+# Pulling a published static binary is the intended pattern ("pull the binary rather than
+# build it, unless building IS the job"). Still prefer baking it into a tier when the
+# binary is stable; fetch it here when it is versioned per-job.
+host ghcr.io
+host release-assets.githubusercontent.com
+
+# --- container registry: pulling a work image is not a "runtime install" ------
+host pkg-containers.githubusercontent.com
+
+# --- project dependency resolution (handled by the gate's PROJECTDEP class) ----
+# `npm ci`, `npm install`, and `pip install -r requirements.txt` are the PROJECT's own
+# dependencies, resolved from a lockfile the repo owns. They change per commit and cannot be
+# baked per-project, so they are classified as legitimate job work rather than a toolchain
+# install. `cargo build` fetching crates is the same category.
+#
+# The distinction that matters: installing a TOOL the job needs in order to run belongs in an
+# image tier. Resolving the project's declared dependencies is the job.
